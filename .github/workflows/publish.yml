@@ -82,7 +82,10 @@ jobs:
         run: |
           SMOKE_ROOT=/tmp/release bash scripts/release-smoke.sh
           tgz="$(ls /tmp/release/verify/*.tgz)"
-          tar tzf "$tgz" | grep -q '^package/dist/cli.js$'
-          tar tzf "$tgz" | grep -q '^package/dist/listener-daemon.js$'
+          # List once, then check the listing: `tar … | grep -q` fails under
+          # pipefail when grep exits at its match while tar is still writing.
+          listing="$(tar tzf "$tgz")"
+          grep -qx 'package/dist/cli.js' <<<"$listing"
+          grep -qx 'package/dist/listener-daemon.js' <<<"$listing"
           echo "tgz=$tgz" >> "$GITHUB_OUTPUT"
       - run: npm publish "${{ steps.pack.outputs.tgz }}" --ignore-scripts --provenance --access public
