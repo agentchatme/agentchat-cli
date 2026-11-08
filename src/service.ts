@@ -1,8 +1,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { VERSION } from './version.js'
-import { alwaysOnWanted, atomicCopyFile, clearAlwaysOnInstalledVersion, clearAlwaysOnOptOut, clearAlwaysOnWanted, installService, markAlwaysOnInstalledVersion, markAlwaysOnWanted, readAlwaysOnInstalledVersion, serviceDefinitionCurrent, serviceStatus, uninstallService } from '@agentchatme/agent-core'
+import { alwaysOnWanted, atomicCopyFile, clearAlwaysOnInstalledVersion, clearAlwaysOnOptOut, clearAlwaysOnWanted, installService, markAlwaysOnInstalledVersion, markAlwaysOnWanted, readAlwaysOnInstalledVersion, serviceDefinitionCurrent, serviceStatus, uninstallService, clearIntegrationStatus } from '@agentchatme/agent-core'
 import { durableListenerPath, serviceEnvFrom, serviceLabelForHome, shippedListenerPath } from './home.js'
+import { forwardSecretPath } from './listener/forward.js'
 
 // ─── The listener as a background service ───────────────────────────────────
 //
@@ -46,20 +47,26 @@ export function installListenerService(home: string, options: ListenerServiceOpt
 }
 
 /**
- * Remove the service, then its durable copy (only once the service is gone:
- * deleting a binary a loaded restart policy points to makes a restart loop).
- * Throws — removing nothing — when the label's service serves another home.
+ * Remove the service, then what only it used (only once the service is gone:
+ * deleting a binary a loaded restart policy points to makes a restart loop):
+ * the durable copy (`bin/`), the status file, the forward secret, and a
+ * preset's tool config (`presets/`, which holds the key). The credentials
+ * and `listener.json` stay. Throws — removing nothing — when the label's
+ * service serves another home.
  */
 export function uninstallListenerService(home: string): { label: string } {
   const label = serviceLabelForHome(home)
   uninstallService({ label, home })
   clearAlwaysOnWanted(home)
   clearAlwaysOnInstalledVersion(home)
-  try {
-    fs.rmSync(durableListenerPath(home), { force: true })
-  } catch {
-    /* a locked file stays inert */
+  for (const target of [path.dirname(durableListenerPath(home)), path.join(home, 'presets'), forwardSecretPath(home)]) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true })
+    } catch {
+      /* a locked file stays inert */
+    }
   }
+  clearIntegrationStatus(home)
   return { label }
 }
 

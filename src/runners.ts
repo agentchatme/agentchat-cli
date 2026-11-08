@@ -93,7 +93,7 @@ export function planListener(home: string, config: ListenerConfig, options: Plan
               url: config.url,
               handle: identity.handle,
               home: identity.home,
-              tray: () => api.inbox.tray({ limit: INBOX_TRAY_MAX_LIMIT }),
+              tray: () => api.inbox.tray({ limit: INBOX_TRAY_MAX_LIMIT, includeInvites: true }),
               ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
             })
           },

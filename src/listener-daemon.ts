@@ -4,14 +4,16 @@ import { log } from '@agentchatme/agent-core'
 import { readListenerConfig } from './listener/config.js'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { planListener } from './runners.js'
+import { envKeyConflict, listenerFilesProblem } from './guards.js'
 
 // ─── The installed listener: what the service runs ──────────────────────────
 //
 // `node <home>/bin/agentchat-listener.mjs --home <home>` — copied there by
 // `agentchat listen --install`, self-contained, run by launchd / systemd /
 // the Windows launcher. It reads what to run from `<home>/listener.json` (the
-// owner's choice, written by the owner) and hands it to the engine's resident
-// supervisor: idle without an identity, connect when one appears, follow the
+// owner's choice, written by the owner — refused when the file or the home is
+// not the owner's alone) and hands it to the engine's resident supervisor,
+// serving only the agent the home's credentials hold: idle without an identity, connect when one appears, follow the
 // credential, one run at a time. Without a valid config it stays resident and
 // looks again every few seconds — exiting would only make the service manager
 // restart it in a loop.
@@ -40,7 +42,11 @@ export async function listenerDaemon(argv: string[] = process.argv.slice(2)): Pr
   process.on('SIGINT', onSignal)
   log.info(`listener resident for ${home}`)
   for (;;) {
-    const read = readListenerConfig(home)
+    // Refused, not run: a home or a listener.json someone else owns or can
+    // write (it is the command line this service runs), and an exported key
+    // that is not the home's agent.
+    const refusal = envKeyConflict(home) ?? listenerFilesProblem(home)
+    const read = refusal === null ? readListenerConfig(home) : ({ ok: false, error: refusal } as const)
     if (read.ok) {
       process.off('SIGTERM', onSignal)
       process.off('SIGINT', onSignal)
@@ -57,6 +63,8 @@ export async function listenerDaemon(argv: string[] = process.argv.slice(2)): Pr
           manualPath: plan.manualPath,
           ...(config.mode === 'preset' ? { profile: config.profile } : {}),
           ...(config.budget_ms !== undefined ? { budgetMs: config.budget_ms } : {}),
+          credentialsFromHomeOnly: true,
+          dismissIgnoredInvites: config.mode !== 'forward',
         })
       } catch (err) {
         // An unknown preset (a config from a newer build): say it, keep looking.

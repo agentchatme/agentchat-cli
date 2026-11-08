@@ -3,6 +3,7 @@ import { clientIdentityOf, normalizeHandle, resolveIdentity, type SocketState } 
 import { socketStateOf, wsBaseFor } from '@agentchatme/agent-core/daemon'
 import { cliClient, invocation } from './home.js'
 import { terminalSafe } from './terminal.js'
+import { envKeyConflict } from './guards.js'
 
 // ─── `agentchat watch`: the socket, as a listener sees it ───────────────────
 //
@@ -101,7 +102,13 @@ export function describeFrame(type: string, payload: Record<string, unknown>, se
 }
 
 export async function runWatch(home: string, opts: { json?: boolean; seconds?: string }, io: WatchIo): Promise<number> {
-  const identity = resolveIdentity(home)
+  // The listener's agent: the home's credentials, never an exported key.
+  const conflict = envKeyConflict(home, io.env ?? process.env)
+  if (conflict !== null) {
+    io.err(conflict)
+    return 1
+  }
+  const identity = resolveIdentity(home, { envKey: false })
   if (identity === null) {
     io.err(`No AgentChat identity in ${home}. Set one up first: ${invocation(io.env)} register`)
     return 1

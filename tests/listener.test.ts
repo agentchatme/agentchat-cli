@@ -86,6 +86,9 @@ describe('forward — the address rules', () => {
     expect(forwardUrlProblem('https://hooks.example.com/agentchat')).toBeNull()
     expect(forwardUrlProblem('http://example.com/wake')).toMatch(/only to this machine/)
     expect(forwardUrlProblem('http://10.0.0.5/wake')).toMatch(/only to this machine/)
+    // This machine, named literally: no wildcard name, no other loopback address.
+    expect(forwardUrlProblem('http://api.localhost:9/x')).toMatch(/only to this machine/)
+    expect(forwardUrlProblem('http://127.0.0.2:9/x')).toMatch(/only to this machine/)
     expect(forwardUrlProblem('https://user:pw@example.com/')).toMatch(/credentials/)
     expect(forwardUrlProblem('ftp://localhost/')).toMatch(/unsupported/)
     expect(forwardUrlProblem('not a url')).toMatch(/not a URL/)
@@ -99,26 +102,39 @@ describe('forward — the address rules', () => {
     if (process.platform !== 'win32') expect(fs.statSync(forwardSecretPath(identity.home)).mode & 0o777).toBe(0o600)
   })
 
-  it('the payload carries counts and handles only — never a preview', () => {
+  it('the payload is a v1 wake: the triggering reason, counts and handles, the tray\'s invites, an empty summary — never a preview or a group name', () => {
     const payload = buildWakePayload({
       handle: 'probe',
       cards: [
         { conversation_id: 'conv_1', unread: 2, last_sender: '@alice', preview: { text: 'SECRET BODY' } } as never,
         { conversation_id: 'conv_2', unread: 0, last_sender: '@bob' },
       ],
+      invites: [{ invite_id: 'gri_1', group: { id: 'grp_1', name: 'A GROUP NAME', member_count: 3 }, invited_by: '@carol', at: '2026-11-08T00:00:00Z' }],
+      wake: { reason: 'reminder' },
       deliveryId: '00000000-0000-4000-8000-000000000001',
       now: new Date('2026-11-08T00:00:00Z'),
     })
     expect(payload).toEqual({
       version: 1,
       type: 'agentchat.wake',
+      reason: 'reminder',
       handle: '@probe',
       conversations: [{ id: 'conv_1', unread: 2, latest_sender: '@alice' }],
-      summary: 'AgentChat wake for @probe: @alice: 2 unread in conv_1.',
+      invites: [{ invite_id: 'gri_1', group_id: 'grp_1', invited_by: '@carol', at: '2026-11-08T00:00:00Z' }],
+      summary: '',
       delivery_id: '00000000-0000-4000-8000-000000000001',
       ts: '2026-11-08T00:00:00.000Z',
     })
     expect(JSON.stringify(payload)).not.toContain('SECRET BODY')
+    expect(JSON.stringify(payload)).not.toContain('A GROUP NAME')
+  })
+
+  it('reason: the run\'s wake (step only on unanswered), else what the tray holds', () => {
+    const at = { handle: 'p', cards: [], deliveryId: 'd', now: new Date(0) }
+    expect(buildWakePayload({ ...at, wake: { reason: 'unanswered', step: 3 } })).toMatchObject({ reason: 'unanswered', step: 3 })
+    expect(buildWakePayload({ ...at, wake: { reason: 'messages', step: 3 } }).step).toBeUndefined()
+    expect(buildWakePayload({ ...at, invites: [{ invite_id: 'gri_2', group: { id: 'g', name: 'n', member_count: 1 }, invited_by: '@x', at: 'now' }] }).reason).toBe('invite')
+    expect(buildWakePayload({ ...at, cards: [{ conversation_id: 'c', unread: 1, last_sender: '@x' }] }).reason).toBe('messages')
   })
 })
 
@@ -164,9 +180,10 @@ describe('ForwardRunner — one POST per wake, agentchat dialect', () => {
   it('a 2xx is ok: Bearer from the secret file, delivery id = the run id, the payload from the tray counts', async () => {
     const runner = forwarder()
     await runner.preflight()
-    const outcome = await runner.start({ kind: 'wake', prompt: 'ignored', runId: '11111111-1111-4111-8111-111111111111', budgetMs: 10_000 })
+    const outcome = await runner.start({ kind: 'wake', wake: { reason: 'unanswered', step: 2 }, prompt: 'ignored', runId: '11111111-1111-4111-8111-111111111111', budgetMs: 10_000 })
     expect(outcome.state).toBe('ok')
     expect(seen).toHaveLength(1)
+    expect(JSON.parse(seen[0]?.body ?? '{}')).toMatchObject({ reason: 'unanswered', step: 2, summary: '' })
     const [hit] = seen
     expect(hit?.path).toBe('/hooks/agentchat')
     expect(hit?.headers['authorization']).toBe(`Bearer ${readForwardSecret(identity.home)}`)
@@ -207,7 +224,7 @@ describe('ForwardRunner — one POST per wake, agentchat dialect', () => {
     }
     const blind = await forwarder({ tray: async () => Promise.reject(new Error('503')) }).start({ kind: 'wake', prompt: '', runId: 'e', budgetMs: 10_000 })
     expect(blind.state).toBe('ok')
-    expect(JSON.parse(seen[seen.length - 1]?.body ?? '{}')).toMatchObject({ conversations: [], summary: expect.stringContaining('new activity') })
+    expect(JSON.parse(seen[seen.length - 1]?.body ?? '{}')).toMatchObject({ conversations: [], invites: [], summary: '', reason: 'messages' })
   })
 
   it('refuses an address the rules do not allow, at construction', () => {

@@ -1,12 +1,13 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { alwaysOnWanted, checkManual, createIdentityCommands, describeManualSync, probeHostedMcp, renderAnchorBlock, resolveIdentity, syncManual, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
+import { alwaysOnWanted, checkManual, DEFAULT_API_BASE, createIdentityCommands, describeManualSync, probeHostedMcp, renderAnchorBlock, resolveIdentity, syncManual, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
 import { describeListenerConfig, readListenerConfig, type ListenerConfig } from './listener/config.js'
 import { forwardUrlProblem, readForwardSecret } from './listener/forward.js'
 import { presetNamed } from '@agentchatme/agent-core/presets'
 import { cliClient, invocation, manualPathFor } from './home.js'
 import { installListenerService, listenerServiceCurrent, listenerServiceStatus } from './service.js'
+import { envKeyConflict, listenerFilesProblem } from './guards.js'
 
 // ─── This agent, described once, for the identity commands ──────────────────
 //
@@ -41,8 +42,11 @@ function check(name: string, verdict: DoctorCheck['verdict'], detail: string): D
 }
 
 /** What the configured listener needs to work, as doctor checks. */
-export function listenerChecks(home: string, config: ListenerConfig, env: NodeJS.ProcessEnv = process.env): DoctorCheck[] {
+export function listenerChecks(home: string, config: ListenerConfig, env: NodeJS.ProcessEnv = process.env, apiBase: string = DEFAULT_API_BASE): DoctorCheck[] {
   const checks: DoctorCheck[] = [check('listener', 'PASS', describeListenerConfig(config))]
+  // What the boot service refuses: someone else's (or a shared-writable) home or config.
+  const unsafe = listenerFilesProblem(home)
+  checks.push(unsafe === null ? check('listener-files', 'PASS', `${home} and listener.json are yours alone`) : check('listener-files', 'FAIL', `${unsafe} — the service refuses to run it; \`${invocation(env)} listen --install\` tightens files you own`))
   let workdirOk = true
   try {
     workdirOk = fs.statSync(config.workdir).isDirectory()
@@ -58,6 +62,8 @@ export function listenerChecks(home: string, config: ListenerConfig, env: NodeJS
     else {
       const inspected = preset.inspect(env)
       checks.push(check('preset', inspected.ok ? 'PASS' : 'FAIL', `${preset.label}: ${inspected.detail}`))
+      // The hosted-tool configuration a run of this preset will see (no key printed).
+      for (const line of preset.describeMcp({ home, apiBase, env })) checks.push(check('preset-mcp', 'PASS', line))
     }
   }
   if (config.mode === 'forward') {
@@ -135,11 +141,13 @@ export function cliProfile(home: string, env: NodeJS.ProcessEnv = process.env): 
     extraDoctorChecks: async (ctx: DoctorContext): Promise<DoctorCheck[]> => {
       const identity = resolveIdentity(home)
       const checks: DoctorCheck[] = [await manualCheck(home, ctx.manual, identity?.apiBase ?? null, ctx.fix === true)]
+      const conflict = envKeyConflict(home, env)
+      if (conflict !== null) checks.push(check('listener-identity', 'WARN', `the listener will not start: ${conflict}`))
       const read = readListenerConfig(home)
       let config: ListenerConfig | null = null
       if (read.ok) {
         config = read.config
-        checks.push(...listenerChecks(home, config, env))
+        checks.push(...listenerChecks(home, config, env, identity?.apiBase ?? DEFAULT_API_BASE))
       } else if (fs.existsSync(path.join(home, 'listener.json'))) {
         checks.push(check('listener', 'FAIL', read.error))
       } else {

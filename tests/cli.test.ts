@@ -8,6 +8,8 @@ import { bindPositionals, renderResult } from '../src/tools.js'
 import { terminalSafe } from '../src/terminal.js'
 import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceLabelForHome } from '../src/home.js'
 import { homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
+import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
+import { listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
 import { alwaysOnWanted } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
@@ -233,5 +235,82 @@ describe('logout and doctor', () => {
 
   it('the manual lives in a skills dir under the home', () => {
     expect(manualPathFor(home)).toBe(path.join(home, 'skills', 'agentchat', 'SKILL.md'))
+  })
+})
+
+describe('the listener serves only the home\'s agent', () => {
+  const io = (env: NodeJS.ProcessEnv) => ({ out: (l: string) => out.push(l), err: (l: string) => err.push(l), cwd: tmp, env, shipped: shippedStub() })
+  function shippedStub(): string {
+    const file = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(file, '//\n')
+    return file
+  }
+
+  it('an exported AGENTCHAT_API_KEY that is not the home\'s key stops listen and forward with one line; the same key does not', async () => {
+    fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe' }))
+    const other = 'ac_live_' + 'o'.repeat(40)
+    expect(envKeyConflict(home, { AGENTCHAT_API_KEY: other })).toMatch(/not the key .* holds/)
+    expect(envKeyConflict(home, { AGENTCHAT_API_KEY: KEY })).toBeNull()
+    expect(envKeyConflict(home, {})).toBeNull()
+
+    expect(await runListen(home, 'listen', { run: 'x', install: true }, io({ AGENTCHAT_API_KEY: other }))).toBe(1)
+    expect(await runListen(home, 'forward', { to: 'http://localhost:1/w' }, io({ AGENTCHAT_API_KEY: other }))).toBe(1)
+    expect(err).toHaveLength(2)
+    expect(err.every((line) => !line.includes('\n') && /AGENTCHAT_API_KEY/.test(line))).toBe(true)
+    expect(err.join('')).not.toContain(other)
+    expect(await runListen(home, 'listen', { run: 'x', install: true }, io({ AGENTCHAT_API_KEY: KEY }))).toBe(0)
+  })
+
+  it('no credentials in the home and a key exported: refused too (the listener never takes its key from the environment)', () => {
+    expect(envKeyConflict(home, { AGENTCHAT_API_KEY: KEY })).toMatch(/there is none/)
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('the boot service runs only a config that is yours alone', () => {
+  const base = { version: 1 as const, workdir: '/tmp', updated_at: 'x', mode: 'run' as const, command: 'x' }
+
+  it('refuses a group- or other-writable listener.json or home, and a link where the file belongs', () => {
+    writeListenerConfig(home, base)
+    fs.chmodSync(home, 0o700)
+    expect(listenerFilesProblem(home)).toBeNull()
+    fs.chmodSync(listenerConfigPath(home), 0o620)
+    expect(listenerFilesProblem(home)).toMatch(/writable by its group/)
+    fs.chmodSync(listenerConfigPath(home), 0o600)
+    fs.chmodSync(home, 0o757)
+    expect(listenerFilesProblem(home)).toMatch(/writable by others/)
+    fs.chmodSync(home, 0o700)
+    const real = path.join(tmp, 'elsewhere.json')
+    fs.writeFileSync(real, '{}')
+    fs.rmSync(listenerConfigPath(home))
+    fs.symlinkSync(real, listenerConfigPath(home))
+    expect(ownerOnlyProblem(listenerConfigPath(home), 'file')).toMatch(/not a regular file/)
+  })
+
+  it('listen --install tightens the home and the config it owns, then installs', async () => {
+    fs.chmodSync(home, 0o775)
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    expect(await runListen(home, 'listen', { run: 'my-agent', install: true }, { out: (l) => out.push(l), err: (l) => err.push(l), cwd: tmp, shipped })).toBe(0)
+    expect(fs.statSync(home).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(listenerConfigPath(home)).mode & 0o777).toBe(0o600)
+    expect(out.join('\n')).toMatch(/Tightened .* → mode 700/)
+    expect(tightenListenerFiles(home)).toEqual([])
+  })
+})
+
+describe('listen --uninstall removes what only the service used', () => {
+  it('the durable copy, the status file, the forward secret and the preset tool config go; credentials and listener.json stay', async () => {
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe' }))
+    const ioq = { out: (l: string) => out.push(l), err: (l: string) => err.push(l), cwd: tmp, shipped }
+    expect(await runListen(home, 'forward', { to: 'http://localhost:7/w', install: true }, ioq)).toBe(0)
+    fs.mkdirSync(path.join(home, 'presets'), { recursive: true })
+    fs.writeFileSync(claudeMcpConfigPath(home), '{"key":"held"}')
+    fs.writeFileSync(path.join(home, 'integration.status.json'), '{}')
+    expect(fs.existsSync(path.join(home, 'forward.secret'))).toBe(true)
+    expect(await runListen(home, 'listen', { uninstall: true }, ioq)).toBe(0)
+    for (const gone of ['bin', 'presets', 'forward.secret', 'integration.status.json']) expect(fs.existsSync(path.join(home, gone)), gone).toBe(false)
+    for (const kept of ['credentials', 'listener.json']) expect(fs.existsSync(path.join(home, kept)), kept).toBe(true)
   })
 })

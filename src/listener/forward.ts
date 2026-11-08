@@ -1,9 +1,8 @@
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
-import * as net from 'node:net'
 import * as path from 'node:path'
-import type { InboxCard, InboxTray } from 'agentchatme'
-import type { RunOutcome, RunPreflight, RunRequest, RunRunner } from '@agentchatme/agent-core'
+import type { InboxCard, InboxTray, TrayInvite } from 'agentchatme'
+import type { RunOutcome, RunPreflight, RunRequest, RunRunner, RunWake } from '@agentchatme/agent-core'
 import { atomicWriteFile } from '@agentchatme/agent-core'
 import { log } from '@agentchatme/agent-core'
 
@@ -11,22 +10,30 @@ import { log } from '@agentchatme/agent-core'
 //
 // `agentchat forward --to http://localhost:PORT/…` is for developers building
 // their own receiver: the listener holds the socket, and every wake run is one
-// HTTP POST shaped exactly like the server's webhook wake in the `agentchat`
-// dialect — `Authorization: Bearer <secret>`, `X-AgentChat-Delivery`,
-// `X-AgentChat-Attempt`, and the JSON wake payload (version 1). A receiver
-// written against this works unchanged behind a real wake webhook.
+// HTTP POST shaped like the server's webhook wake in the `agentchat` dialect —
+// `Authorization: Bearer <secret>`, `X-AgentChat-Delivery`,
+// `X-AgentChat-Attempt`, and the JSON wake payload, version 1: `reason` (and
+// `step` on `unanswered`) from the wake that triggered it, the conversations
+// with unread messages. A receiver written against this works unchanged
+// behind a real wake webhook. `summary` is empty: the contract calls it
+// informative, and its wording is the server's, never copied here. The tray's
+// pending invites ride along as `invites` (ids and handles; receivers ignore
+// fields they do not know).
 //
 // What travels is what a wake carries: who you are, which conversations have
 // unread messages, how many, from whom, the cycle id. Never a message body —
 // the tray is read for its counts (`conversation_id`, `unread`, `last_sender`;
-// the preview is not touched). Reading the tray marks nothing delivered or
-// read. The receiver reads and decides through the hosted tools.
+// the preview is not touched) and its invites' ids. Reading the tray marks
+// nothing delivered or read. The receiver reads and decides through the
+// hosted tools; a 2xx says the receiver took the POST, not that the agent saw
+// anything, so in this mode no invite is ever dismissed on the agent's behalf.
 //
 // The bearer secret is generated once into the identity home
 // (`forward.secret`, owner-only) and read by the receiver from there. The
-// address is the owner's: plain HTTP only to this machine (loopback), HTTPS
-// anywhere; never with credentials in it; redirects are not followed (a
-// redirect would carry the bearer somewhere the owner did not name).
+// address is the owner's: plain HTTP only to this machine, named literally
+// (`localhost`, `127.0.0.1`, `::1`), HTTPS anywhere; never with credentials in
+// it; redirects are not followed (a redirect would carry the bearer somewhere
+// the owner did not name).
 //
 // Outcomes: a 2xx is `ok`; nothing listening is `not_started`; any other
 // answer is `failed`; no answer within the timeout is `timed_out`.
@@ -57,12 +64,11 @@ export function readForwardSecret(home: string): string | null {
   }
 }
 
+/** This machine, named literally: `localhost`, `127.0.0.1`, `::1` — nothing a resolver or a wildcard could redirect. */
+const LOOPBACK_NAMES: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '::1'])
+
 function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  if (host === 'localhost' || host.endsWith('.localhost')) return true
-  if (net.isIPv4(host)) return host.startsWith('127.')
-  if (net.isIPv6(host)) return host === '::1'
-  return false
+  return LOOPBACK_NAMES.has(hostname.replace(/^\[|\]$/g, '').toLowerCase())
 }
 
 /** Null when the owner's address may receive wakes; otherwise why not. */
@@ -76,33 +82,49 @@ export function forwardUrlProblem(raw: string): string | null {
   if (url.username !== '' || url.password !== '') return 'the address must not carry credentials (the bearer secret is sent in a header)'
   if (url.protocol === 'https:') return null
   if (url.protocol === 'http:') {
-    return isLoopbackHost(url.hostname) ? null : 'plain http is allowed only to this machine (localhost, 127.0.0.1, ::1); use https for anything else'
+    return isLoopbackHost(url.hostname) ? null : 'plain http is allowed only to this machine, named as localhost, 127.0.0.1 or ::1; use https for anything else'
   }
   return `unsupported scheme ${url.protocol} (http to localhost, or https)`
 }
 
-/** The webhook wake payload, version 1, `agentchat` dialect. No message content. */
+/** A pending invite as the payload carries it: ids and handles, no group name. */
+export interface ForwardedInvite {
+  readonly invite_id: string
+  readonly group_id: string
+  readonly invited_by: string
+  readonly at: string
+}
+
+/** The webhook wake payload, version 1, `agentchat` dialect (contract v1), plus the tray's invites. No message content. */
 export interface WakePayloadV1 {
   readonly version: 1
   readonly type: 'agentchat.wake'
+  /** `messages`, `reminder`, `invite`, `unanswered`, or a newer reason the server sent. */
+  readonly reason: string
+  /** The re-wake rung, on `unanswered` only. */
+  readonly step?: number
   /** `@`-prefixed recipient handle. */
   readonly handle: string
   readonly conversations: ReadonlyArray<{ readonly id: string; readonly unread: number; readonly latest_sender: string }>
-  readonly summary: string
+  readonly invites: readonly ForwardedInvite[]
+  /** Informative in the contract; empty here (its wording is the server's). */
+  readonly summary: ''
   readonly delivery_id: string
   readonly ts: string
 }
 
-/** The facts line every wake carries (`summary`), from the same facts. */
-export function wakeSummary(handle: string, conversations: WakePayloadV1['conversations']): string {
-  if (conversations.length === 0) return `AgentChat wake for ${handle}: new activity on your account. Check your inbox.`
-  return `AgentChat wake for ${handle}: ${conversations.map((c) => `${c.latest_sender}: ${c.unread} unread in ${c.id}`).join('; ')}.`
+/** What a forwarded wake says woke it: the run's wake, else what the tray holds. */
+export function forwardReason(wake: RunWake | undefined, cards: number, invites: number): { reason: string; step?: number } {
+  if (wake !== undefined) return wake.reason === 'unanswered' && wake.step !== undefined ? { reason: wake.reason, step: wake.step } : { reason: wake.reason }
+  return { reason: cards === 0 && invites > 0 ? 'invite' : 'messages' }
 }
 
-/** One wake from the tray's counts. Reads `conversation_id`, `unread` and `last_sender` of each card; nothing else. */
+/** One wake from the tray's counts and invites. Reads `conversation_id`, `unread`, `last_sender` of each card and the invites' ids; nothing else. */
 export function buildWakePayload(params: {
   handle: string
   cards: readonly Pick<InboxCard, 'conversation_id' | 'unread' | 'last_sender'>[]
+  invites?: readonly Pick<TrayInvite, 'invite_id' | 'group' | 'invited_by' | 'at'>[]
+  wake?: RunWake
   deliveryId: string
   now: Date
 }): WakePayloadV1 {
@@ -110,12 +132,19 @@ export function buildWakePayload(params: {
   const conversations = params.cards
     .filter((card) => typeof card.conversation_id === 'string' && Number.isInteger(card.unread) && card.unread > 0)
     .map((card) => ({ id: card.conversation_id, unread: card.unread, latest_sender: card.last_sender ?? '@unknown' }))
+  const invites = (params.invites ?? [])
+    .filter((invite) => typeof invite.invite_id === 'string' && invite.invite_id.length > 0)
+    .map((invite) => ({ invite_id: invite.invite_id, group_id: invite.group?.id ?? '', invited_by: invite.invited_by ?? '', at: invite.at ?? '' }))
+  const { reason, step } = forwardReason(params.wake, conversations.length, invites.length)
   return {
     version: 1,
     type: 'agentchat.wake',
+    reason,
+    ...(step !== undefined ? { step } : {}),
     handle,
     conversations,
-    summary: wakeSummary(handle, conversations),
+    invites,
+    summary: '',
     delivery_id: params.deliveryId,
     ts: params.now.toISOString(),
   }
@@ -128,8 +157,8 @@ export interface ForwardRunnerOptions {
   readonly handle: string
   /** The identity home, where the secret lives (read per wake: deleting it rotates it). */
   readonly home: string
-  /** The tray, for its counts. */
-  readonly tray: () => Promise<Pick<InboxTray, 'conversations'>>
+  /** The tray, for its counts and its pending invites (read with `includeInvites`). */
+  readonly tray: () => Promise<Pick<InboxTray, 'conversations' | 'invites'>>
   readonly timeoutMs?: number
   readonly fetch?: typeof fetch
   readonly now?: () => Date
@@ -161,13 +190,16 @@ export class ForwardRunner implements RunRunner {
 
     const secret = readForwardSecret(this.options.home) ?? ensureForwardSecret(this.options.home)
     let cards: Pick<InboxCard, 'conversation_id' | 'unread' | 'last_sender'>[] = []
+    let invites: TrayInvite[] = []
     try {
-      cards = (await this.options.tray()).conversations
+      const tray = await this.options.tray()
+      cards = tray.conversations
+      invites = Array.isArray(tray.invites) ? tray.invites : []
     } catch (err) {
       // The wake was real; a receiver can read its inbox itself.
       log.warn(`forward: the tray could not be read (${err instanceof Error ? err.message : String(err)}) — forwarding the wake without its conversations`)
     }
-    const payload = buildWakePayload({ handle: this.options.handle, cards, deliveryId: request.runId, now: this.now() })
+    const payload = buildWakePayload({ handle: this.options.handle, cards, invites, ...(request.wake !== undefined ? { wake: request.wake } : {}), deliveryId: request.runId, now: this.now() })
     request.onStarted?.()
 
     const controller = new AbortController()

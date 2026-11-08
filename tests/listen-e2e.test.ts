@@ -10,7 +10,7 @@ import { runWatch, describeFrame } from '../src/watch.js'
 import { readIntegrationStatus } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
 import { installFakeClaude, readFakeRuns } from './helpers/fake-runtimes.js'
-import { startServerDouble, until, type ServerDouble } from './helpers/server-double.js'
+import { startServerDouble, until, pause, type ServerDouble } from './helpers/server-double.js'
 
 // ─── A foreground listener, end to end, against the server double ───────────
 //
@@ -124,6 +124,49 @@ describe('agentchat forward, end to end', () => {
   }, 30_000)
 })
 
+describe('agentchat forward — invites and wake reasons, end to end', () => {
+  it('an invite-only tray is forwarded on every wake (reason invite, the invite on board) and never dismissed; an unanswered re-wake carries its step', async () => {
+    await server.close()
+    server = await startServerDouble({ tray: { waiting: 0, invites: ['gri_7'] }, helloCapabilities: ['ack', 'heartbeat', 'rewake'], manual: { version: '9.0.0', body: '---\nname: agentchat\nversion: 9.0.0\n---\n\nTest manual.\n' } })
+    fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe', api_base: server.apiBase }))
+    const hits: Array<Record<string, unknown>> = []
+    const receiver = http.createServer((req, res) => {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        hits.push(JSON.parse(body) as Record<string, unknown>)
+        res.statusCode = 204
+        res.end()
+      })
+    })
+    await new Promise<void>((r) => receiver.listen(0, '127.0.0.1', () => r()))
+    const address = receiver.address()
+    if (address === null || typeof address === 'string') throw new Error('no address')
+    try {
+      const controller = new AbortController()
+      const done = runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal))
+      await until(() => hits.length === 1, 15_000)
+      expect(hits[0]).toMatchObject({ version: 1, reason: 'invite', conversations: [], invites: [{ invite_id: 'gri_7', group_id: 'grp_gri_7', invited_by: '@peer' }], summary: '' })
+      expect(JSON.stringify(hits[0])).not.toContain('A GROUP NAME')
+      // Two more wakes with the invite still pending: the kit would dismiss it after two completed
+      // runs in single-run mode; a forward is no proof the agent saw it.
+      server.send({ type: 'group.invite.received', payload: { invite_id: 'gri_7' } })
+      await until(() => hits.length === 2, 15_000)
+      server.setTray({ waiting: 1, invites: ['gri_7'] })
+      server.send({ type: 'wake', payload: { reason: 'unanswered', conversation_ids: ['conv_0'], step: 2, at: new Date().toISOString() } })
+      await until(() => hits.length === 3, 15_000)
+      expect(hits[2]).toMatchObject({ reason: 'unanswered', step: 2, conversations: [{ id: 'conv_0', unread: 1, latest_sender: '@peer' }] })
+      await pause(500)
+      expect(server.dismissed).toEqual([])
+      controller.abort()
+      expect(await done).toBe(0)
+    } finally {
+      receiver.closeAllConnections()
+      await new Promise<void>((r) => receiver.close(() => r()))
+    }
+  }, 60_000)
+})
+
 describe('agentchat listen --preset claude-code, end to end (fake claude)', () => {
   it('the run is `claude -p` with this agent\'s own tool config, the claude-code texts, and no key on argv', async () => {
     const fake = installFakeClaude(tmp)
@@ -195,4 +238,31 @@ describe('the installed listener: the self-contained bundle a service runs', () 
       await new Promise((r) => child.once('exit', r))
     }
   }, 40_000)
+})
+
+describe.skipIf(process.platform === 'win32' || !fs.existsSync(BUNDLE))('the installed listener refuses a config that is not yours alone', () => {
+  it('a group-writable listener.json: logged once, nothing run, still resident', async () => {
+    const bare = path.join(tmp, 'bare-refuse')
+    fs.mkdirSync(bare)
+    fs.copyFileSync(BUNDLE, path.join(bare, 'agentchat-listener.mjs'))
+    const record = path.join(tmp, 'must-not-run.txt')
+    const script = path.join(tmp, 'agent-refuse.cjs')
+    fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(record)}, 'ran')`)
+    writeListenerConfig(home, { version: 1, mode: 'run', command: `"${process.execPath}" "${script}"`, workdir: path.join(tmp, 'work'), updated_at: new Date().toISOString() })
+    fs.chmodSync(home, 0o700)
+    fs.chmodSync(path.join(home, 'listener.json'), 0o660)
+    const child = spawn(process.execPath, [path.join(bare, 'agentchat-listener.mjs'), '--home', home], { cwd: bare, stdio: ['ignore', 'pipe', 'pipe'] })
+    let log = ''
+    child.stdout.on('data', (c) => (log += String(c)))
+    child.stderr.on('data', (c) => (log += String(c)))
+    try {
+      await until(() => /writable by its group/.test(log), 10_000)
+      await pause(1_500)
+      expect(fs.existsSync(record)).toBe(false)
+      expect(child.exitCode).toBeNull()
+    } finally {
+      child.kill('SIGTERM')
+      await new Promise((r) => child.once('exit', r))
+    }
+  }, 30_000)
 })

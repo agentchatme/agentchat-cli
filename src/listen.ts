@@ -5,6 +5,7 @@ import { isRunProfile, resolveIdentity, resolveRunProfile } from '@agentchatme/a
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
 import { invocation } from './home.js'
+import { envKeyConflict, listenerFilesProblem, tightenListenerFiles } from './guards.js'
 import { planListener, type PlanOptions } from './runners.js'
 import { installListenerService, listenerServiceStatus, uninstallListenerService } from './service.js'
 
@@ -102,6 +103,13 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
     }
   }
 
+  // The listener serves the home's agent only; an exported key that is another agent's is a split.
+  const conflict = envKeyConflict(home, env)
+  if (conflict !== null) {
+    io.err(conflict)
+    return 1
+  }
+
   // `listen --install` with nothing else re-installs what is saved.
   const nothingGiven = flags.run === undefined && flags.preset === undefined && flags.to === undefined
   let config: ListenerConfig
@@ -136,11 +144,20 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
     io.err(err instanceof Error ? err.message : String(err))
     return 1
   }
-  const identity = resolveIdentity(home)
+  const identity = resolveIdentity(home, { envKey: false })
   const forwardNote = config.mode === 'forward' ? [`Bearer secret: ${forwardSecretPath(home)} — your endpoint checks \`Authorization: Bearer <that file's contents>\`.`] : []
 
   if (flags.install === true) {
     if (config.mode === 'forward') ensureForwardSecret(home)
+    // The boot service runs what listener.json says: it and the home must be
+    // the owner's own, or the service will refuse them at every start.
+    const tightened = tightenListenerFiles(home)
+    const unsafe = listenerFilesProblem(home)
+    if (unsafe !== null) {
+      io.err(`Not installing: ${unsafe}. The service runs the command in ${home}/listener.json at every login, so only you may own and write it.`)
+      return 1
+    }
+    for (const line of tightened) io.out(`Tightened ${line} (the home holds the key; the config is the service's command line).`)
     try {
       const { label } = installListenerService(home, { extraEnv: plan.preset?.serviceEnv ?? [], env, ...(io.shipped !== undefined ? { shipped: io.shipped } : {}) })
       io.out(
@@ -182,6 +199,10 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
     manualPath: plan.manualPath,
     ...(config.mode === 'preset' ? { profile: config.profile } : {}),
     ...(config.budget_ms !== undefined ? { budgetMs: config.budget_ms } : {}),
+    // The home's agent only, never an exported key's.
+    credentialsFromHomeOnly: true,
+    // A receiver's 2xx is no proof the agent saw an invite: never dismiss one in forward mode.
+    dismissIgnoredInvites: config.mode !== 'forward',
     env,
     ...(io.signal !== undefined ? { signal: io.signal } : {}),
     ...(io.exit !== undefined ? { exit: io.exit } : {}),

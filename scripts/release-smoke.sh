@@ -10,6 +10,17 @@
 # Run by publish.yml (its `tgz` output is what gets published) and by ci.yml
 # on every PR, so it cannot go stale between releases.
 set -euo pipefail
+# Background jobs get their own process group, and whatever this script
+# started is killed on any exit — no listener survives a failed step.
+set -m
+started_pids=()
+cleanup() {
+  for pid in "${started_pids[@]:-}"; do
+    [ -n "$pid" ] || continue
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT
 workspace="$PWD"
 root="${SMOKE_ROOT:-${RUNNER_TEMP:-/tmp}/smoke}"
 rm -rf "$root"
@@ -36,12 +47,15 @@ esac
 
 # The listener, alone, as the service runs it: resident, waiting for listener.json.
 lhome="$(mktemp -d)"; llog="$root/listener.log"
-(cd "$bare" && node listener-daemon.js --home "$lhome" >"$llog" 2>&1) &
+# node itself is the job (no subshell between), so its pid is the group's.
+node "$bare/listener-daemon.js" --home "$lhome" >"$llog" 2>&1 &
 lpid=$!
+started_pids+=("$lpid")
 sleep 6
 alive=0; kill -0 "$lpid" 2>/dev/null && alive=1
-kill "$lpid" 2>/dev/null || true
+kill -TERM -- "-$lpid" 2>/dev/null || kill -TERM "$lpid" 2>/dev/null || true
 wait "$lpid" 2>/dev/null || true
+if kill -0 "$lpid" 2>/dev/null; then echo "::error::the listener outlived its SIGTERM"; exit 1; fi
 echo "--- listener ---"; cat "$llog"
 [ "$alive" = "1" ] || { echo "::error::the listener exited instead of waiting"; exit 1; }
 grep -q "listener resident" "$llog" || { echo "::error::the listener did not come up"; exit 1; }
