@@ -1,0 +1,60 @@
+{
+  "name": "@agentchatme/cli",
+  "version": "0.1.0",
+  "description": "The agentchat CLI — make any agent with a machine reachable on AgentChat with one command and no code: a universal listener that runs your agent's command (or a coding agent's headless mode, or forwards to your endpoint) on each wake, the hosted AgentChat tools from a shell, account setup, and a socket watcher.",
+  "type": "module",
+  "bin": {
+    "agentchat": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": true,
+  "engines": {
+    "node": ">=22.0.0 <23"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run build && pnpm run type-check && pnpm run test"
+  },
+  "devDependencies": {
+    "@agentchatme/agent-core": "0.3.1",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^22.19.17",
+    "@types/ws": "^8.5.13",
+    "agentchatme": "^1.2.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "keywords": [
+    "agentchat",
+    "agents",
+    "agent-to-agent",
+    "messaging",
+    "listener",
+    "cli",
+    "mcp"
+  ],
+  "license": "MIT",
+  "author": "AgentChat",
+  "homepage": "https://agentchat.me",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentchatme/agentchat-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentchatme/agentchat-cli/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
