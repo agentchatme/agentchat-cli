@@ -1,0 +1,88 @@
+name: publish
+
+# OIDC trusted publishing for @agentchatme/cli, gated by a human approval —
+# same model as every other AgentChat package. No tokens.
+#
+# ONE-TIME npm setup (package owner, on npmjs.com) BEFORE the first tag:
+#   Trusted Publisher for @agentchatme/cli → repo agentchatme/agentchat-cli,
+#   workflow publish.yml (bare filename), environment npm-publish, allowed
+#   action "npm publish". Confirm the saved summary card renders — npm
+#   silently discards unconfirmed saves and only validates at publish time
+#   (mismatches surface as E404 on PUT).
+#
+# Release flow: set the version (VERSIONING.md; the founder sets it) → tag
+# `v<version>` → push the tag → approve the npm-publish environment.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      tgz: ${{ steps.smoke.outputs.tgz }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: the tagged commit is on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main"; exit 1; }
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm type-check
+      - run: pnpm build
+      - run: pnpm test
+      - name: tag matches package version
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          [ "$pkg" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package $pkg"; exit 1; }
+      - name: release smoke
+        id: smoke
+        run: bash scripts/release-smoke.sh
+
+  publish:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      # Pinned: the publishing tool is part of the supply chain (OIDC trusted
+      # publishing needs npm >= 11.5.1). Move it deliberately.
+      - run: npm install -g npm@11.21.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # The artifact published is the one the smoke ran: packed, smoked, then published as is.
+      - name: pack and smoke the artifact that will be published
+        id: pack
+        shell: bash
+        run: |
+          SMOKE_ROOT=/tmp/release bash scripts/release-smoke.sh
+          tgz="$(ls /tmp/release/verify/*.tgz)"
+          tar tzf "$tgz" | grep -q '^package/dist/cli.js$'
+          tar tzf "$tgz" | grep -q '^package/dist/listener-daemon.js$'
+          echo "tgz=$tgz" >> "$GITHUB_OUTPUT"
+      - run: npm publish "${{ steps.pack.outputs.tgz }}" --ignore-scripts --provenance --access public
