@@ -266,7 +266,7 @@ describe('the listener serves only the home\'s agent', () => {
   })
 })
 
-describe.skipIf(process.platform === 'win32')('the boot service runs only a config that is yours alone', () => {
+describe.skipIf(process.platform === 'win32')('POSIX only (permission bits; Windows ACLs are not checked): the boot service runs only a config that is yours alone', () => {
   const base = { version: 1 as const, workdir: '/tmp', updated_at: 'x', mode: 'run' as const, command: 'x' }
 
   it('refuses a group- or other-writable listener.json or home, and a link where the file belongs', () => {

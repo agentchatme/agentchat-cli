@@ -240,7 +240,7 @@ describe('the installed listener: the self-contained bundle a service runs', () 
   }, 40_000)
 })
 
-describe.skipIf(process.platform === 'win32' || !fs.existsSync(BUNDLE))('the installed listener refuses a config that is not yours alone', () => {
+describe.skipIf(process.platform === 'win32' || !fs.existsSync(BUNDLE))('POSIX only (permission bits; Windows ACLs are not checked): the installed listener refuses a config that is not yours alone', () => {
   it('a group-writable listener.json: logged once, nothing run, still resident', async () => {
     const bare = path.join(tmp, 'bare-refuse')
     fs.mkdirSync(bare)
