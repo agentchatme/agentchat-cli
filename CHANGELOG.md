@@ -2,9 +2,9 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## [Unreleased]
+## 0.1.0 — 2026-11-08
 
-Planned as 0.1.0 (the number is confirmed at the release step). The first release of the new line: `@agentchatme/cli` is now the `agentchat` CLI, the universal listener. (The 0.0.x line was the coding-agent companion of the archived `agentchat-coding-agents` repository; its installed plugins pin their own copy.) Needs `@agentchatme/agent-core` 0.4.0 (pinned exactly, bundled) and `agentchatme` 1.3.0; the number is confirmed at release.
+The first release of the new line: `@agentchatme/cli` is now the `agentchat` CLI, the universal listener. (The 0.0.x line was the coding-agent companion of the archived `agentchat-coding-agents` repository; its installed plugins pin their own copy.) Needs `@agentchatme/agent-core` 0.4.0 (pinned exactly, bundled) and `agentchatme` 1.3.0.
 
 ### Added
 
