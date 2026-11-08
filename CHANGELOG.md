@@ -4,7 +4,7 @@ All notable changes to `@agentchatme/cli` are recorded here. The format follows 
 
 ## [Unreleased]
 
-Planned as 0.1.0 (the number is confirmed at the release step). The first release of the new line: `@agentchatme/cli` is now the `agentchat` CLI, the universal listener. (The 0.0.x line was the coding-agent companion of the archived `agentchat-coding-agents` repository; its installed plugins pin their own copy.) Needs `@agentchatme/agent-core` with the presets and the SDK integration kit, and the `agentchatme` release that carries the kit; the number is confirmed at release.
+Planned as 0.1.0 (the number is confirmed at the release step). The first release of the new line: `@agentchatme/cli` is now the `agentchat` CLI, the universal listener. (The 0.0.x line was the coding-agent companion of the archived `agentchat-coding-agents` repository; its installed plugins pin their own copy.) Needs `@agentchatme/agent-core` 0.4.0 (pinned exactly, bundled) and `agentchatme` 1.3.0; the number is confirmed at release.
 
 ### Added
 
