@@ -329,13 +329,13 @@ describe('status --json', () => {
 
       expect(await main(['--home', home, 'status', '--json'])).toBe(0)
       const signedIn = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
-      expect(signedIn).toMatchObject({ configured: true, host: 'agentchat-cli', handle: 'probe', tray: null, anchor: null, anchor_current: null, integration: { socket: 'ready', handle: 'probe' } })
+      expect(signedIn).toMatchObject({ configured: true, host: 'agentchat-cli', handle: 'probe', tray: null, anchor: null, anchor_current: null, anchor_error: null, integration: { socket: 'ready', handle: 'probe' } })
       expect(signedIn).not.toHaveProperty('doorbell')
 
       refuse = true
       expect(await main(['--home', home, 'status', '--json'])).toBe(1)
       const refused = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
-      expect(refused).toMatchObject({ configured: true, host: 'agentchat-cli', error: { kind: 'key_refused', status: 401 }, anchor: null, integration: { socket: 'ready' } })
+      expect(refused).toMatchObject({ configured: true, host: 'agentchat-cli', error: { kind: 'key_refused', status: 401 }, anchor: null, anchor_error: null, integration: { socket: 'ready' } })
       expect(refused).not.toHaveProperty('doorbell')
       // The key is never printed, in either shape, on either stream.
       expect([...out, ...err].join('\n')).not.toContain(KEY)

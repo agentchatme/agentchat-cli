@@ -10,6 +10,10 @@ Fixed and adjusted existing behaviour (the number is set at the release step, `V
 
 - A listener service installed by this version is held off by an operator's `AGENTCHAT_DOORBELL=off` (the previous name of `AGENTCHAT_INTEGRATION`), as a foreground `listen` is. `listen --install`, `forward --install` and `doctor --fix` captured only the current name into the service, so the service ran while a foreground `listen` in the same shell stayed off. An `off` under the old name is now captured as `AGENTCHAT_INTEGRATION=off` (the current name wins when both are set), `--install` says so in one line, and the service definition never carries the old name.
 
+### Added
+
+- `agentchat status --json` carries `anchor_error` (always `null` for the CLI, which places no instruction file).
+
 ### Removed
 
 - The `doorbell` key in `agentchat status --json`, an alias of `integration` the engine had kept since agent-core 0.2.0. The listener's record is under `integration` in every shape `status --json` prints: no identity yet; the API key refused or the server unreachable; signed in.
