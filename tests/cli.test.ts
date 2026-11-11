@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'node:fs'
+import * as http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { main, normalizeArgv } from '../src/main.js'
@@ -11,7 +13,7 @@ import { homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
 import { listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
-import { alwaysOnWanted } from '@agentchatme/agent-core'
+import { alwaysOnWanted, writeIntegrationStatus, type IntegrationStatus } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
 import { INBOX_TOOL, SEND_TOOL, startMcpDouble, type McpDouble } from './helpers/mcp-double.js'
 
@@ -235,6 +237,83 @@ describe('logout and doctor', () => {
 
   it('the manual lives in a skills dir under the home', () => {
     expect(manualPathFor(home)).toBe(path.join(home, 'skills', 'agentchat', 'SKILL.md'))
+  })
+})
+
+describe('status --json', () => {
+  // The engine's `status`, as this CLI runs it: the listener's record is under
+  // `integration` in every shape it prints, and nothing else carries it (the
+  // `doorbell` alias is gone since agent-core 0.4.1). The CLI places no
+  // instruction file, so `anchor` and `anchor_current` are null.
+  const listenerRecord = (): IntegrationStatus => ({
+    version: 2,
+    updated_at: new Date().toISOString(),
+    pid: 4242,
+    runtime: 'generic',
+    handle: 'probe',
+    profile: 'answer',
+    socket: 'ready',
+    wakes: 1,
+    wakes_absorbed: 0,
+    invites: 0,
+    runs_started: 1,
+    runs_ok: 1,
+    runs_failed: 0,
+    runs_timed_out: 0,
+    runs_not_started: 0,
+    runs_skipped_empty: 0,
+    last_run: null,
+    retry_rung: 0,
+    retry_due_at: null,
+    last_error: null,
+    texts: null,
+  })
+
+  it('no identity: `integration`, and no `doorbell` key', async () => {
+    expect(await main(['--home', home, 'status', '--json'])).toBe(0)
+    const parsed = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
+    expect(parsed).toMatchObject({ configured: false, host: 'agentchat-cli', integration: null })
+    expect(parsed).not.toHaveProperty('doorbell')
+  })
+
+  it('signed in, and with the key refused: the listener under `integration`, no `doorbell` key, no instruction file', async () => {
+    // Only GET /v1/agents/me answers: the tray cannot be read (`tray: null`) and no texts are served.
+    let refuse = false
+    const server = http.createServer((req, res) => {
+      res.setHeader('content-type', 'application/json')
+      if (req.url === '/v1/agents/me') {
+        if (refuse) {
+          res.statusCode = 401
+          res.end(JSON.stringify({ code: 'UNAUTHORIZED', message: 'Invalid API key' }))
+        } else {
+          res.end(JSON.stringify({ handle: 'probe', status: 'active' }))
+        }
+        return
+      }
+      res.statusCode = 404
+      res.end(JSON.stringify({ code: 'NOT_FOUND', message: 'not served here' }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      signIn(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)
+      writeIntegrationStatus(home, listenerRecord())
+
+      expect(await main(['--home', home, 'status', '--json'])).toBe(0)
+      const signedIn = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
+      expect(signedIn).toMatchObject({ configured: true, host: 'agentchat-cli', handle: 'probe', tray: null, anchor: null, anchor_current: null, integration: { socket: 'ready', handle: 'probe' } })
+      expect(signedIn).not.toHaveProperty('doorbell')
+
+      refuse = true
+      expect(await main(['--home', home, 'status', '--json'])).toBe(1)
+      const refused = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
+      expect(refused).toMatchObject({ configured: true, host: 'agentchat-cli', error: { kind: 'key_refused', status: 401 }, anchor: null, integration: { socket: 'ready' } })
+      expect(refused).not.toHaveProperty('doorbell')
+      // The key is never printed, in either shape, on either stream.
+      expect([...out, ...err].join('\n')).not.toContain(KEY)
+    } finally {
+      server.closeAllConnections()
+      await new Promise((resolve) => server.close(resolve))
+    }
   })
 })
 

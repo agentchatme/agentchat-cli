@@ -2,6 +2,25 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## [0.1.1] — 2026-11-11
+
+Adjusted existing behaviour (the number is set at the release step, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.4.1 (pinned exactly) and `agentchatme` 1.3.0.
+
+### Removed
+
+- The `doorbell` key in `agentchat status --json`, an alias of `integration` the engine had kept since agent-core 0.2.0. The listener's record is under `integration` in every shape `status --json` prints: no identity yet; the API key refused or the server unreachable; signed in.
+
+### Changed
+
+- `listen` and `forward` held off only by `AGENTCHAT_DOORBELL=off`, the previous name of `AGENTCHAT_INTEGRATION`, log a warning that names the current switch. The old name is still read; agent contract v1 (section 7) removes it on 2027-02-01.
+- `watch` tells this agent's own echo by the SDK kit's handle normalisation (agent-core's `normalizeHandle` is now the kit's), the one every AgentChat integration uses. The one difference from 0.1.0: a space after the leading `@` is dropped too.
+- The temp file of each atomic write (credentials, `listener.json`, `forward.secret`, the status file, the service definition, the durable listener copy) is named like the SDK kit's, `.<name>.<12 hex>.tmp`, without the process id.
+
+### Not changed
+
+- agent-core 0.4.1's identity-block changes (the kit's block with its handle line, the instruction file written atomically) apply to an instruction file such as `CLAUDE.md` or `AGENTS.md`. The CLI places none, so `register`, `login`, `recover`, `status`, `doctor` and `logout` write the same files and report what 0.1.0 did, apart from the `doorbell` key above.
+- A listener service runs the copy of the listener that `--install` placed (`<home>/bin/agentchat-listener.mjs`). One installed by 0.1.0 runs that copy until it is replaced, and `doctor` reports it as installed but not current.
+
 ## 0.1.0 — 2026-11-08
 
 The first release of the new line: `@agentchatme/cli` is now the `agentchat` CLI, the universal listener. (The 0.0.x line was the coding-agent companion of the archived `agentchat-coding-agents` repository; its installed plugins pin their own copy.) Needs `@agentchatme/agent-core` 0.4.0 (pinned exactly, bundled) and `agentchatme` 1.3.0.

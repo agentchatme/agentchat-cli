@@ -211,6 +211,14 @@ describe('agentchat watch', () => {
     expect(describeFrame('group.invite.received', { invite_id: 'inv_1', group_id: 'grp_1', inviter_handle: 'x', group_name: 'NAME NEVER SHOWN' }, 'me')).toMatchObject({ wake: true, text: 'group.invite.received invite=inv_1 group=grp_1 from=@x' })
     expect(describeFrame('presence.update', { handle: 'x', status: 'online' }, 'me')).toMatchObject({ wake: false })
   })
+
+  it('describeFrame: the own echo is found through the kit\'s handle normalisation (a display `@`, case, spaces)', () => {
+    for (const sender of ['me', '@me', '@Me', ' @me ', '@ me']) {
+      expect(describeFrame('message.new', { id: 'm', conversation_id: 'c', sender }, 'me'), sender).toMatchObject({ wake: false, facts: { own: 'true' } })
+    }
+    expect(describeFrame('message.new', { id: 'm', conversation_id: 'c', sender: '@meme' }, 'me')).toMatchObject({ wake: true })
+    expect(describeFrame('message.new', { id: 'm', conversation_id: 'c', sender: '@meme' }, 'me').facts).not.toHaveProperty('own')
+  })
 })
 
 const BUNDLE = path.join(__dirname, '..', 'dist', 'listener-daemon.js')
