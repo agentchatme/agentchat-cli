@@ -1,7 +1,7 @@
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MANUAL_FILENAME, MANUAL_SKILL_NAME, serviceLabelFor, type IntegrationClient } from '@agentchatme/agent-core'
+import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, integrationDisabledBy, MANUAL_FILENAME, MANUAL_SKILL_NAME, serviceLabelFor, type IntegrationClient } from '@agentchatme/agent-core'
 import { VERSION } from './version.js'
 
 // ─── The only file of the `agentchat` CLI that knows where things are ───────
@@ -83,12 +83,30 @@ export const SERVICE_ENV_KEYS = [
   'AGENTCHAT_LOG_LEVEL',
 ] as const
 
-/** The switches above plus `extra` (a preset's own: where its runtime keeps its config). */
+/**
+ * True when only the switch's previous name holds the listener off (a legacy
+ * name, `INTEGRATION_ENV_LEGACY`: compatibility reader only). The engine
+ * decides it, and reads that name until agent contract v1 removes it
+ * (`INTEGRATION_ENV_LEGACY_REMOVAL`); when the engine drops the reader, this
+ * goes with it.
+ */
+export function offByLegacySwitch(env: NodeJS.ProcessEnv = process.env): boolean {
+  return integrationDisabledBy(env) === INTEGRATION_ENV_LEGACY
+}
+
+/**
+ * The switches above plus `extra` (a preset's own: where its runtime keeps its
+ * config). An operator's `off` under the switch's previous name is captured
+ * under the current one: never dropped (an installed service would run while a
+ * foreground `listen` in the same shell stays off), and the unit never carries
+ * the old name.
+ */
 export function serviceEnvFrom(env: NodeJS.ProcessEnv = process.env, extra: readonly string[] = []): Record<string, string> {
   const out: Record<string, string> = {}
   for (const key of [...SERVICE_ENV_KEYS, ...extra]) {
     const value = env[key]?.trim()
     if (value !== undefined && value.length > 0) out[key] = value
   }
+  if (offByLegacySwitch(env)) out[INTEGRATION_ENV] = 'off'
   return out
 }

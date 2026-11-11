@@ -6,6 +6,7 @@ import { type ListenerConfig } from './listener/config.js'
 import { type RunnerFactory, type RunnerIdentity } from '@agentchatme/agent-core/daemon'
 import { presetNamed, type Preset } from '@agentchatme/agent-core/presets'
 import { cliClient, manualPathFor } from './home.js'
+import { VERSION } from './version.js'
 
 // ─── What one listener config runs, as a runner per identity ───────────────
 
@@ -67,6 +68,9 @@ export function planListener(home: string, config: ListenerConfig, options: Plan
               apiKey: identity.apiKey,
               apiBase: identity.apiBase,
               env,
+              // The runs name their runtime to the hosted tools (no wake-webhook
+              // tools: this listener wakes them) and this CLI as what placed them.
+              clientVersion: VERSION,
               ...(options.presetCommand !== undefined ? { command: options.presetCommand } : {}),
             }),
         },

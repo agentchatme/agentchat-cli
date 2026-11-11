@@ -1,17 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'node:fs'
+import * as http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { main, normalizeArgv } from '../src/main.js'
 import { configFromFlags, runListen } from '../src/listen.js'
 import { bindPositionals, renderResult } from '../src/tools.js'
 import { terminalSafe } from '../src/terminal.js'
-import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceLabelForHome } from '../src/home.js'
+import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceEnvFrom, serviceLabelForHome } from '../src/home.js'
 import { homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
 import { listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
-import { alwaysOnWanted } from '@agentchatme/agent-core'
+import { alwaysOnWanted, writeIntegrationStatus, type IntegrationStatus } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
 import { INBOX_TOOL, SEND_TOOL, startMcpDouble, type McpDouble } from './helpers/mcp-double.js'
 
@@ -201,6 +203,52 @@ describe('listen --install / --uninstall (dry run, sandbox HOME)', () => {
     expect(readListenerConfig(home).ok).toBe(true)
   })
 
+  it('an off under the switch\'s previous name is captured under the current one, never dropped; the unit never carries the old name', async () => {
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'off' })).toEqual({ AGENTCHAT_INTEGRATION: 'off' })
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'off', AGENTCHAT_INTEGRATION: 'on' })).toEqual({ AGENTCHAT_INTEGRATION: 'on' })
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'off', AGENTCHAT_INTEGRATION: 'off' })).toEqual({ AGENTCHAT_INTEGRATION: 'off' })
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'on' })).toEqual({})
+    expect(serviceEnvFrom({})).toEqual({})
+
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    expect(await runListen(home, 'listen', { run: 'my-agent --once', install: true }, io({ shipped, env: { AGENTCHAT_DOORBELL: 'off' } }))).toBe(0)
+    expect(out.join('\n')).toMatch(/Held off: AGENTCHAT_DOORBELL=off, the old name of AGENTCHAT_INTEGRATION, is captured as AGENTCHAT_INTEGRATION=off .*; set AGENTCHAT_INTEGRATION=off instead/)
+    // The definition the dry run wrote under the sandbox HOME, on every OS: a
+    // launchd plist, a systemd user unit, or the Windows Startup launcher.
+    const written = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? written(path.join(dir, e.name)) : [fs.readFileSync(path.join(dir, e.name), 'utf-8')]))
+    const definition = written(path.join(tmp, 'user')).filter((text) => text.includes(durableListenerPath(home)) || text.includes(serviceLabelForHome(home))).join('\n')
+    expect(definition).toMatch(/AGENTCHAT_INTEGRATION(?:<\/key>\s*<string>|=|"\) = ")off/)
+    expect(definition).not.toContain('AGENTCHAT_DOORBELL')
+
+    // The value as the operator wrote it.
+    out.length = 0
+    expect(await runListen(home, 'listen', { install: true }, io({ shipped, env: { AGENTCHAT_DOORBELL: 'false' } }))).toBe(0)
+    expect(out.join('\n')).toContain('Held off: AGENTCHAT_DOORBELL=false,')
+
+    // The current name set: nothing to capture, no line.
+    out.length = 0
+    expect(await runListen(home, 'listen', { install: true }, io({ shipped, env: { AGENTCHAT_INTEGRATION: 'off' } }))).toBe(0)
+    expect(out.join('\n')).not.toContain('Held off')
+  })
+
+  // Pinned on purpose, so that changing it is a decision and not an accident:
+  // every `listen --install` (and `doctor --fix`) writes the definition again
+  // from the shell that runs it. A switch captured earlier is not carried
+  // forward — an `off` set at one install is gone after an install from a
+  // shell without it.
+  it('a later install from a shell without the switch writes the definition without it', async () => {
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    const written = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? written(path.join(dir, e.name)) : [fs.readFileSync(path.join(dir, e.name), 'utf-8')]))
+    const definition = (): string => written(path.join(tmp, 'user')).filter((text) => text.includes(durableListenerPath(home)) || text.includes(serviceLabelForHome(home))).join('\n')
+
+    expect(await runListen(home, 'listen', { run: 'my-agent --once', install: true }, io({ shipped, env: { AGENTCHAT_INTEGRATION: 'off' } }))).toBe(0)
+    expect(definition()).toMatch(/AGENTCHAT_INTEGRATION(?:<\/key>\s*<string>|=|"\) = ")off/)
+    expect(await runListen(home, 'listen', { install: true }, io({ shipped, env: {} }))).toBe(0)
+    expect(definition()).not.toContain('AGENTCHAT_INTEGRATION')
+  })
+
   it('forward --install creates the bearer secret and says where it is', async () => {
     const shipped = path.join(tmp, 'listener-daemon.js')
     fs.writeFileSync(shipped, '//\n')
@@ -235,6 +283,83 @@ describe('logout and doctor', () => {
 
   it('the manual lives in a skills dir under the home', () => {
     expect(manualPathFor(home)).toBe(path.join(home, 'skills', 'agentchat', 'SKILL.md'))
+  })
+})
+
+describe('status --json', () => {
+  // The engine's `status`, as this CLI runs it: the listener's record is under
+  // `integration` in every shape it prints, and nothing else carries it (the
+  // `doorbell` alias is gone since agent-core 0.4.1). The CLI places no
+  // instruction file, so `anchor` and `anchor_current` are null.
+  const listenerRecord = (): IntegrationStatus => ({
+    version: 2,
+    updated_at: new Date().toISOString(),
+    pid: 4242,
+    runtime: 'generic',
+    handle: 'probe',
+    profile: 'answer',
+    socket: 'ready',
+    wakes: 1,
+    wakes_absorbed: 0,
+    invites: 0,
+    runs_started: 1,
+    runs_ok: 1,
+    runs_failed: 0,
+    runs_timed_out: 0,
+    runs_not_started: 0,
+    runs_skipped_empty: 0,
+    last_run: null,
+    retry_rung: 0,
+    retry_due_at: null,
+    last_error: null,
+    texts: null,
+  })
+
+  it('no identity: `integration`, and no `doorbell` key', async () => {
+    expect(await main(['--home', home, 'status', '--json'])).toBe(0)
+    const parsed = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
+    expect(parsed).toMatchObject({ configured: false, host: 'agentchat-cli', integration: null })
+    expect(parsed).not.toHaveProperty('doorbell')
+  })
+
+  it('signed in, and with the key refused: the listener under `integration`, no `doorbell` key, no instruction file', async () => {
+    // Only GET /v1/agents/me answers: the tray cannot be read (`tray: null`) and no texts are served.
+    let refuse = false
+    const server = http.createServer((req, res) => {
+      res.setHeader('content-type', 'application/json')
+      if (req.url === '/v1/agents/me') {
+        if (refuse) {
+          res.statusCode = 401
+          res.end(JSON.stringify({ code: 'UNAUTHORIZED', message: 'Invalid API key' }))
+        } else {
+          res.end(JSON.stringify({ handle: 'probe', status: 'active' }))
+        }
+        return
+      }
+      res.statusCode = 404
+      res.end(JSON.stringify({ code: 'NOT_FOUND', message: 'not served here' }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      signIn(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)
+      writeIntegrationStatus(home, listenerRecord())
+
+      expect(await main(['--home', home, 'status', '--json'])).toBe(0)
+      const signedIn = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
+      expect(signedIn).toMatchObject({ configured: true, host: 'agentchat-cli', handle: 'probe', tray: null, anchor: null, anchor_current: null, anchor_error: null, integration: { socket: 'ready', handle: 'probe' } })
+      expect(signedIn).not.toHaveProperty('doorbell')
+
+      refuse = true
+      expect(await main(['--home', home, 'status', '--json'])).toBe(1)
+      const refused = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>
+      expect(refused).toMatchObject({ configured: true, host: 'agentchat-cli', error: { kind: 'key_refused', status: 401 }, anchor: null, anchor_error: null, integration: { socket: 'ready' } })
+      expect(refused).not.toHaveProperty('doorbell')
+      // The key is never printed, in either shape, on either stream.
+      expect([...out, ...err].join('\n')).not.toContain(KEY)
+    } finally {
+      server.closeAllConnections()
+      await new Promise((resolve) => server.close(resolve))
+    }
   })
 })
 

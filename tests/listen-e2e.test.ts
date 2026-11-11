@@ -9,6 +9,7 @@ import { writeListenerConfig } from '../src/listener/config.js'
 import { runWatch, describeFrame } from '../src/watch.js'
 import { readIntegrationStatus } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
+import { VERSION } from '../src/version.js'
 import { installFakeClaude, readFakeRuns } from './helpers/fake-runtimes.js'
 import { startServerDouble, until, pause, type ServerDouble } from './helpers/server-double.js'
 
@@ -179,6 +180,9 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     expect(await done).toBe(0)
     const [run] = readFakeRuns(fake)
     expect(run?.argv[run.argv.indexOf('--mcp-config') + 1]).toBe(claudeMcpConfigPath(home))
+    // The run names its runtime to the hosted tools (no wake-webhook tools: the listener wakes it), and this CLI as what placed it.
+    const mcp = JSON.parse(fs.readFileSync(claudeMcpConfigPath(home), 'utf-8')) as { mcpServers: Record<string, { headers: Record<string, string> }> }
+    expect(mcp.mcpServers['agentchat']?.headers).toMatchObject({ 'X-AgentChat-Client': 'claude-code', 'X-AgentChat-Client-Version': VERSION })
     expect(run?.stdin).toContain('SERVED WAKE INSTRUCTION for claude-code')
     // The run cannot read the home, so it is pointed at the address.
     expect(run?.stdin).toContain('https://agentchat.me/skill.md')
@@ -210,6 +214,14 @@ describe('agentchat watch', () => {
     expect(describeFrame('wake', { reason: 'reminder', conversation_id: 'c', step: 2, anchor_message_id: 'm' }, 'me')).toMatchObject({ wake: true, text: 'wake reason=reminder conv=c step=2' })
     expect(describeFrame('group.invite.received', { invite_id: 'inv_1', group_id: 'grp_1', inviter_handle: 'x', group_name: 'NAME NEVER SHOWN' }, 'me')).toMatchObject({ wake: true, text: 'group.invite.received invite=inv_1 group=grp_1 from=@x' })
     expect(describeFrame('presence.update', { handle: 'x', status: 'online' }, 'me')).toMatchObject({ wake: false })
+  })
+
+  it('describeFrame: the own echo is found through the kit\'s handle normalisation (a display `@`, case, spaces)', () => {
+    for (const sender of ['me', '@me', '@Me', ' @me ', '@ me']) {
+      expect(describeFrame('message.new', { id: 'm', conversation_id: 'c', sender }, 'me'), sender).toMatchObject({ wake: false, facts: { own: 'true' } })
+    }
+    expect(describeFrame('message.new', { id: 'm', conversation_id: 'c', sender: '@meme' }, 'me')).toMatchObject({ wake: true })
+    expect(describeFrame('message.new', { id: 'm', conversation_id: 'c', sender: '@meme' }, 'me').facts).not.toHaveProperty('own')
   })
 })
 
