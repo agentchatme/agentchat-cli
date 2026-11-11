@@ -4,7 +4,11 @@ All notable changes to `@agentchatme/cli` are recorded here. The format follows 
 
 ## [0.1.1] — 2026-11-11
 
-Adjusted existing behaviour (the number is set at the release step, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.4.1 (pinned exactly) and `agentchatme` 1.3.0.
+Fixed and adjusted existing behaviour (the number is set at the release step, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.4.1 (pinned exactly) and `agentchatme` 1.3.0.
+
+### Fixed
+
+- A listener service installed by this version is held off by an operator's `AGENTCHAT_DOORBELL=off` (the previous name of `AGENTCHAT_INTEGRATION`), as a foreground `listen` is. `listen --install`, `forward --install` and `doctor --fix` captured only the current name into the service, so the service ran while a foreground `listen` in the same shell stayed off. An `off` under the old name is now captured as `AGENTCHAT_INTEGRATION=off` (the current name wins when both are set), `--install` says so in one line, and the service definition never carries the old name.
 
 ### Removed
 

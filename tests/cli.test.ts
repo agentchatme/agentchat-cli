@@ -8,7 +8,7 @@ import { main, normalizeArgv } from '../src/main.js'
 import { configFromFlags, runListen } from '../src/listen.js'
 import { bindPositionals, renderResult } from '../src/tools.js'
 import { terminalSafe } from '../src/terminal.js'
-import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceLabelForHome } from '../src/home.js'
+import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceEnvFrom, serviceLabelForHome } from '../src/home.js'
 import { homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
 import { listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
@@ -201,6 +201,35 @@ describe('listen --install / --uninstall (dry run, sandbox HOME)', () => {
     expect(fs.existsSync(durableListenerPath(home))).toBe(false)
     expect(alwaysOnWanted(home)).toBe(false)
     expect(readListenerConfig(home).ok).toBe(true)
+  })
+
+  it('an off under the switch\'s previous name is captured under the current one, never dropped; the unit never carries the old name', async () => {
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'off' })).toEqual({ AGENTCHAT_INTEGRATION: 'off' })
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'off', AGENTCHAT_INTEGRATION: 'on' })).toEqual({ AGENTCHAT_INTEGRATION: 'on' })
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'off', AGENTCHAT_INTEGRATION: 'off' })).toEqual({ AGENTCHAT_INTEGRATION: 'off' })
+    expect(serviceEnvFrom({ AGENTCHAT_DOORBELL: 'on' })).toEqual({})
+    expect(serviceEnvFrom({})).toEqual({})
+
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    expect(await runListen(home, 'listen', { run: 'my-agent --once', install: true }, io({ shipped, env: { AGENTCHAT_DOORBELL: 'off' } }))).toBe(0)
+    expect(out.join('\n')).toMatch(/Held off: AGENTCHAT_DOORBELL=off, the old name of AGENTCHAT_INTEGRATION, is captured as AGENTCHAT_INTEGRATION=off .*; set AGENTCHAT_INTEGRATION=off instead/)
+    // The definition the dry run wrote under the sandbox HOME, on every OS: a
+    // launchd plist, a systemd user unit, or the Windows Startup launcher.
+    const written = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? written(path.join(dir, e.name)) : [fs.readFileSync(path.join(dir, e.name), 'utf-8')]))
+    const definition = written(path.join(tmp, 'user')).filter((text) => text.includes(durableListenerPath(home)) || text.includes(serviceLabelForHome(home))).join('\n')
+    expect(definition).toMatch(/AGENTCHAT_INTEGRATION(?:<\/key>\s*<string>|=|"\) = ")off/)
+    expect(definition).not.toContain('AGENTCHAT_DOORBELL')
+
+    // The value as the operator wrote it.
+    out.length = 0
+    expect(await runListen(home, 'listen', { install: true }, io({ shipped, env: { AGENTCHAT_DOORBELL: 'false' } }))).toBe(0)
+    expect(out.join('\n')).toContain('Held off: AGENTCHAT_DOORBELL=false,')
+
+    // The current name set: nothing to capture, no line.
+    out.length = 0
+    expect(await runListen(home, 'listen', { install: true }, io({ shipped, env: { AGENTCHAT_INTEGRATION: 'off' } }))).toBe(0)
+    expect(out.join('\n')).not.toContain('Held off')
   })
 
   it('forward --install creates the bearer secret and says where it is', async () => {

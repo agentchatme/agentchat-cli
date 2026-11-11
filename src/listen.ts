@@ -1,10 +1,10 @@
 import * as path from 'node:path'
 import { ensureForwardSecret, forwardSecretPath, forwardUrlProblem } from './listener/forward.js'
 import { describeListenerConfig, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
-import { isRunProfile, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
+import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
-import { invocation } from './home.js'
+import { invocation, offByLegacySwitch } from './home.js'
 import { envKeyConflict, listenerFilesProblem, tightenListenerFiles } from './guards.js'
 import { planListener, type PlanOptions } from './runners.js'
 import { installListenerService, listenerServiceStatus, uninstallListenerService } from './service.js'
@@ -164,6 +164,7 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
         [
           `Listener installed (${label}): ${describeListenerConfig(config)}.`,
           `  ${listenerServiceStatus(home)}`,
+          ...(offByLegacySwitch(env) ? [`  Held off: ${INTEGRATION_ENV_LEGACY}=${env[INTEGRATION_ENV_LEGACY]?.trim() ?? 'off'}, the old name of ${INTEGRATION_ENV}, is captured as ${INTEGRATION_ENV}=off — the service holds no socket and starts no run; set ${INTEGRATION_ENV}=off instead.`] : []),
           ...forwardNote.map((l) => `  ${l}`),
           identity === null
             ? `  It idles until this home has an identity: \`${cli} register\` or \`${cli} login\`.`
