@@ -232,6 +232,23 @@ describe('listen --install / --uninstall (dry run, sandbox HOME)', () => {
     expect(out.join('\n')).not.toContain('Held off')
   })
 
+  // Pinned on purpose, so that changing it is a decision and not an accident:
+  // every `listen --install` (and `doctor --fix`) writes the definition again
+  // from the shell that runs it. A switch captured earlier is not carried
+  // forward — an `off` set at one install is gone after an install from a
+  // shell without it.
+  it('a later install from a shell without the switch writes the definition without it', async () => {
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    const written = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? written(path.join(dir, e.name)) : [fs.readFileSync(path.join(dir, e.name), 'utf-8')]))
+    const definition = (): string => written(path.join(tmp, 'user')).filter((text) => text.includes(durableListenerPath(home)) || text.includes(serviceLabelForHome(home))).join('\n')
+
+    expect(await runListen(home, 'listen', { run: 'my-agent --once', install: true }, io({ shipped, env: { AGENTCHAT_INTEGRATION: 'off' } }))).toBe(0)
+    expect(definition()).toMatch(/AGENTCHAT_INTEGRATION(?:<\/key>\s*<string>|=|"\) = ")off/)
+    expect(await runListen(home, 'listen', { install: true }, io({ shipped, env: {} }))).toBe(0)
+    expect(definition()).not.toContain('AGENTCHAT_INTEGRATION')
+  })
+
   it('forward --install creates the bearer secret and says where it is', async () => {
     const shipped = path.join(tmp, 'listener-daemon.js')
     fs.writeFileSync(shipped, '//\n')

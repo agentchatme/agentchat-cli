@@ -9,6 +9,7 @@ import { writeListenerConfig } from '../src/listener/config.js'
 import { runWatch, describeFrame } from '../src/watch.js'
 import { readIntegrationStatus } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
+import { VERSION } from '../src/version.js'
 import { installFakeClaude, readFakeRuns } from './helpers/fake-runtimes.js'
 import { startServerDouble, until, pause, type ServerDouble } from './helpers/server-double.js'
 
@@ -179,6 +180,9 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     expect(await done).toBe(0)
     const [run] = readFakeRuns(fake)
     expect(run?.argv[run.argv.indexOf('--mcp-config') + 1]).toBe(claudeMcpConfigPath(home))
+    // The run names its runtime to the hosted tools (no wake-webhook tools: the listener wakes it), and this CLI as what placed it.
+    const mcp = JSON.parse(fs.readFileSync(claudeMcpConfigPath(home), 'utf-8')) as { mcpServers: Record<string, { headers: Record<string, string> }> }
+    expect(mcp.mcpServers['agentchat']?.headers).toMatchObject({ 'X-AgentChat-Client': 'claude-code', 'X-AgentChat-Client-Version': VERSION })
     expect(run?.stdin).toContain('SERVED WAKE INSTRUCTION for claude-code')
     // The run cannot read the home, so it is pointed at the address.
     expect(run?.stdin).toContain('https://agentchat.me/skill.md')

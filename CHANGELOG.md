@@ -8,6 +8,7 @@ Fixed and adjusted existing behaviour (the number is set at the release step, `V
 
 ### Fixed
 
+- **`listen --preset claude-code|codex`: the runs name their runtime to the hosted tools.** Each run's tool configuration (the Claude Code `--mcp-config` file, the Codex `-c` overrides) now carries `X-AgentChat-Client: claude-code` / `codex` and `X-AgentChat-Client-Version` with this CLI's version (agent-core 0.4.1's presets). The hosted tool server names a client only from these headers, so a preset run was an unknown client and was shown the wake-webhook tools, though this listener already wakes it.
 - A listener service installed by this version is held off by an operator's `AGENTCHAT_DOORBELL=off` (the previous name of `AGENTCHAT_INTEGRATION`), as a foreground `listen` is. `listen --install`, `forward --install` and `doctor --fix` captured only the current name into the service, so the service ran while a foreground `listen` in the same shell stayed off. An `off` under the old name is now captured as `AGENTCHAT_INTEGRATION=off` (the current name wins when both are set), `--install` says so in one line, and the service definition never carries the old name.
 
 ### Added
