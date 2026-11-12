@@ -8,8 +8,9 @@ import { runListen } from '../src/listen.js'
 import { writeListenerConfig } from '../src/listener/config.js'
 import { runWatch, describeFrame } from '../src/watch.js'
 import { readIntegrationStatus } from '@agentchatme/agent-core'
-import { claudeMcpConfigPath, codexRunArgs } from '@agentchatme/agent-core/presets'
+import { claudeMcpConfigPath, claudeProjectsDirFor, codexRunArgs, readDenyRules } from '@agentchatme/agent-core/presets'
 import { defaultPresetWorkdir } from '../src/listener/config.js'
+import { claudePresetDenyPaths } from '../src/identity.js'
 import { VERSION } from '../src/version.js'
 import { installFakeClaude, installFakeCodex, readFakeMcpLists, readFakeRuns } from './helpers/fake-runtimes.js'
 import { startServerDouble, until, pause, type ServerDouble } from './helpers/server-double.js'
@@ -196,6 +197,11 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     // The work folder is the preset's own, beside the home — not the directory listen ran in.
     expect(fs.realpathSync(run!.cwd)).toBe(fs.realpathSync(defaultPresetWorkdir(home)))
     expect(fs.readdirSync(path.join(home, 'presets')).filter((n) => n.endsWith('.identity.md'))).toEqual([]) // the run's own file is gone with it
+    // The deny list doctor builds its stand-in runner with is the one the listener's real run carried (no drift).
+    if (process.platform !== 'win32') {
+      const configDir = path.resolve(tmp, '.claude')
+      expect(run?.argv.at(-1)).toBe(['WebFetch', 'WebSearch', 'Bash', ...readDenyRules([...claudePresetDenyPaths(home, configDir), claudeProjectsDirFor(configDir)])].join(','))
+    }
     expect(JSON.stringify(run)).not.toContain(KEY)
     expect(server.requests.some((r) => r.startsWith('/v1/texts?runtime=claude-code'))).toBe(true)
   }, 40_000)

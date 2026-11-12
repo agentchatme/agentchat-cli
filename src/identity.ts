@@ -15,6 +15,8 @@ import {
   claudeUserStatePathFor,
   codexAnswerFallbackWorkdir,
   codexHomeFrom,
+  deniedAncestorOf,
+  inexpressibleDenyPaths,
   presetNamed,
   type Preset,
 } from '@agentchatme/agent-core/presets'
@@ -79,6 +81,30 @@ export function removeKeyFiles(home: string): string[] {
  * (`claudeCodePreset.runner` in agent-core). Like the listener, preflight
  * creates the work folder when there is none.
  */
+/**
+ * What a Claude Code preset run's file tools are denied: the listener's home
+ * (its key and tool config), the user-scope MCP state and an integration's
+ * identity home beside it. The list `claudeCodePreset.runner` in agent-core
+ * builds — a test runs the real listener and holds the two equal.
+ */
+export function claudePresetDenyPaths(home: string, configDir: string | undefined): string[] {
+  return [home, claudeUserStatePathFor(configDir), path.join(claudeHomeFor(configDir), 'agentchat')]
+}
+
+/**
+ * The key stores a preset run working in `workdir` could read: for Claude Code
+ * those its deny rules cannot carry there (Windows; a comma or whitespace in
+ * the path), for Codex — whose answer run's `apply_patch` reads its working
+ * root, and whose other runs read anything — the listener's home and
+ * `$CODEX_HOME` (its `.env`) whenever they are inside it.
+ */
+function keyStoresInside(preset: Preset, home: string, workdir: string, env: NodeJS.ProcessEnv): string[] {
+  const inside = (paths: string[]): string[] => paths.filter((p) => deniedAncestorOf(p, [workdir]) !== null)
+  if (preset.name === CLAUDE_CODE_PRESET) return inexpressibleDenyPaths(inside(claudePresetDenyPaths(home, claudeConfigDirFrom(env))))
+  if (preset.name === CODEX_PRESET) return inside([home, codexHomeFrom(env)])
+  return []
+}
+
 export async function presetPreflightCheck(home: string, preset: Preset, profile: RunProfile, workdir: string, env: NodeJS.ProcessEnv, apiBase: string): Promise<DoctorCheck> {
   const key = readCredentials(home)?.api_key ?? null
   if (key === null) return check('preset-preflight', 'WARN', `not checked: no identity in ${home} (the listener idles until this home signs in)`)
@@ -89,7 +115,7 @@ export async function presetPreflightCheck(home: string, preset: Preset, profile
       configDir,
       workdir,
       profile,
-      denyReadPaths: [home, claudeUserStatePathFor(configDir), path.join(claudeHomeFor(configDir), 'agentchat')],
+      denyReadPaths: claudePresetDenyPaths(home, configDir),
       ...(profile === 'answer' ? { answerMcp: { file: claudeMcpConfigPath(home), apiBase, apiKey: () => null } } : {}),
       inexpressibleDeny: process.platform === 'win32' ? 'warn' : 'refuse',
       env,
@@ -122,16 +148,36 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
   // What the boot service refuses: someone else's (or a shared-writable) home or config.
   const unsafe = listenerFilesProblem(home)
   checks.push(unsafe === null ? check('listener-files', 'PASS', `${home} and listener.json are yours alone`) : check('listener-files', 'FAIL', `${unsafe} — the service refuses to run it; \`${invocation(env)} listen --install\` tightens files you own`))
+  const preset = config.mode === 'preset' ? presetNamed(config.preset) : null
+  // A preset first: its preflight creates the work folder when there is none,
+  // as the listener's does when it starts, so the folder is then judged as the
+  // listener will find it.
+  const presetChecks: DoctorCheck[] = []
+  if (config.mode === 'preset') {
+    if (preset === null) presetChecks.push(check('preset', 'FAIL', `unknown preset "${config.preset}"`))
+    else {
+      const inspected = await preset.inspect(env)
+      presetChecks.push(check('preset', inspected.ok ? 'PASS' : 'FAIL', `${preset.label}: ${inspected.detail}`))
+      // The hosted-tool configuration a run of this preset will see (no key printed).
+      for (const line of preset.describeMcp({ home, apiBase, env })) presetChecks.push(check('preset-mcp', 'PASS', line))
+      // The runner's own gate needs a working, signed-in runtime first; the check above says when it is not.
+      if (inspected.ok) presetChecks.push(await presetPreflightCheck(home, preset, config.profile, config.workdir, env, apiBase))
+    }
+  }
   let workdirOk = true
   try {
     workdirOk = fs.statSync(config.workdir).isDirectory()
   } catch {
     workdirOk = false
   }
-  const preset = config.mode === 'preset' ? presetNamed(config.preset) : null
   if (config.mode !== 'forward') {
+    const stores = preset !== null && workdirOk ? keyStoresInside(preset, home, config.workdir, env) : []
     if (!workdirOk) {
-      checks.push(check('workdir', 'FAIL', `${config.workdir} does not exist — create it, or re-run \`${invocation(env)} listen … --install\` with \`--workdir <dir>\``))
+      checks.push(
+        config.mode === 'preset'
+          ? check('workdir', 'WARN', `${config.workdir} does not exist yet — the listener creates it (owner-only) when it starts`)
+          : check('workdir', 'FAIL', `${config.workdir} does not exist — create it, or re-run \`${invocation(env)} listen … --install\` with \`--workdir <dir>\``),
+      )
     } else if (config.mode === 'preset' && workdirExposesHome(config.workdir)) {
       // A preset run started by a peer's message would see the whole home there.
       const fallback = preset !== null ? answerFallbackFor(preset, env) : null
@@ -144,21 +190,19 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
           }; re-run \`${invocation(env)} listen --preset ${config.preset} --install --workdir <a folder of its own>\``,
         ),
       )
+    } else if (config.mode === 'preset' && stores.length > 0) {
+      checks.push(
+        check(
+          'workdir',
+          'WARN',
+          `${config.workdir} contains ${stores.join(' and ')}, where a key is, and a run working there can read it; re-run \`${invocation(env)} listen --preset ${config.preset} --install --workdir <a folder of its own>\``,
+        ),
+      )
     } else {
       checks.push(check('workdir', 'PASS', config.workdir))
     }
   }
-  if (config.mode === 'preset') {
-    if (preset === null) checks.push(check('preset', 'FAIL', `unknown preset "${config.preset}"`))
-    else {
-      const inspected = await preset.inspect(env)
-      checks.push(check('preset', inspected.ok ? 'PASS' : 'FAIL', `${preset.label}: ${inspected.detail}`))
-      // The hosted-tool configuration a run of this preset will see (no key printed).
-      for (const line of preset.describeMcp({ home, apiBase, env })) checks.push(check('preset-mcp', 'PASS', line))
-      // The runner's own gate needs a working, signed-in runtime first; the check above says when it is not.
-      if (inspected.ok) checks.push(await presetPreflightCheck(home, preset, config.profile, config.workdir, env, apiBase))
-    }
-  }
+  checks.push(...presetChecks)
   if (config.mode === 'forward') {
     const problem = forwardUrlProblem(config.url)
     checks.push(problem === null ? check('forward', 'PASS', config.url) : check('forward', 'FAIL', problem))

@@ -9,7 +9,7 @@ import { configFromFlags, runListen } from '../src/listen.js'
 import { bindPositionals, renderResult } from '../src/tools.js'
 import { terminalSafe } from '../src/terminal.js'
 import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceEnvFrom, serviceLabelForHome } from '../src/home.js'
-import { homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
+import { claudePresetDenyPaths, homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
 import { defaultPresetWorkdir, describeListenerConfig, listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
@@ -399,6 +399,33 @@ describe('logout and doctor', () => {
       expect(refused?.verdict).toBe('FAIL')
       expect(refused?.detail).toContain("Codex: no run starts: could not list Codex's MCP servers")
       expect(refused?.detail).toContain('"team.notes" cannot be switched off')
+    })
+
+    it('a work folder that holds a key store a run could read is said; a preset’s missing folder is created by its preflight, as the listener’s start would', async () => {
+      const fake = installFakeCodex(tmp)
+      process.env['PATH'] = `${fake.binDir}${path.delimiter}${originalPath ?? ''}`
+      const env = { ...process.env, CODEX_HOME: path.join(tmp, 'user', '.codex') }
+      // A listener home inside the work folder: an answer run's apply_patch reads its working root.
+      const boxed = path.join(tmp, 'box', 'agentchat-home')
+      fs.mkdirSync(boxed, { recursive: true })
+      fs.writeFileSync(path.join(boxed, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe', api_base: 'https://api.agentchat.test' }))
+      const holding = await listenerChecks(boxed, { ...base, preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'box') }, env)
+      expect(holding.find((c) => c.name === 'workdir')).toMatchObject({ verdict: 'WARN', detail: expect.stringContaining(`${path.join(tmp, 'box')} contains ${boxed}, where a key is`) })
+
+      signIn('https://api.agentchat.test')
+      const missing = path.join(tmp, 'not-yet')
+      const checks = await listenerChecks(home, { ...base, preset: 'codex', profile: 'answer', workdir: missing }, env)
+      expect(checks.find((c) => c.name === 'preset-preflight')).toMatchObject({ verdict: 'PASS' })
+      expect(checks.find((c) => c.name === 'workdir')).toMatchObject({ verdict: 'PASS', detail: missing })
+      // Without a runtime that checks out, nothing creates it: said, not failed — the listener creates it when it starts.
+      // No runtime at all: PATH is an empty folder, so no real codex can ever be reached from here.
+      const emptyBin = path.join(tmp, 'empty-bin')
+      fs.mkdirSync(emptyBin, { recursive: true })
+      process.env['PATH'] = emptyBin
+      const gone = await listenerChecks(home, { ...base, preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'later') }, { ...env, PATH: emptyBin })
+      process.env['PATH'] = originalPath
+      expect(gone.find((c) => c.name === 'preset')).toMatchObject({ verdict: 'FAIL', detail: expect.stringContaining('codex CLI not found on PATH') })
+      expect(gone.find((c) => c.name === 'workdir')).toMatchObject({ verdict: 'WARN', detail: expect.stringContaining('does not exist yet — the listener creates it') })
     })
 
     it('no identity: not checked (the listener idles); a home-folder work folder is said, with the answer runs’ own folder', async () => {
