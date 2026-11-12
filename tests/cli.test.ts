@@ -494,25 +494,34 @@ describe('status --json', () => {
     expect(out.join('\n')).toContain('WARN single-listener: another listener serves this agent: /elsewhere/.claude/agentchat (pid 4243)')
   })
 
-  it('a listener that gave the agent up — runs kept failing, or a refused key — is said by doctor; a serving one too', { timeout: 30_000 }, async () => {
+  it('a listener that gave the agent up — a refused key, or failing runs handed to a waiting listener — is said by doctor, with what clears it; a serving one too', { timeout: 30_000 }, async () => {
     signIn('http://127.0.0.1:9')
     const since = new Date(Date.now() - 120_000).toISOString()
+    const retryAt = new Date(Date.now() + 60_000).toISOString()
+    writeIntegrationStatus(home, { ...listenerRecord(), socket: 'idle', unservable: { reason: 'key_refused', detail: 'auth rejected (close 1008 Invalid token)', since, retry_at: retryAt } })
+    expect(await main(['--home', home, 'doctor'])).toBe(1)
+    expect(out.join('\n')).toContain('FAIL listener-serving: this home gave the agent up: the server refuses its key (auth rejected (close 1008 Invalid token)); signing in again here')
+    out.length = 0
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).toContain("gave up: the server refuses this home's key")
+
+    const reason = 'claude: claude is not signed in'
     writeIntegrationStatus(home, {
       ...listenerRecord(),
       socket: 'idle',
-      last_error: 'this home cannot serve @probe: runs failing: claude: claude is not signed in. It holds no socket and starts no run until that is fixed (checked again every 60 s); another listener for @probe may serve it meanwhile.',
-      runs_failing: { reason: 'claude: claude is not signed in', since, runs_missed: 4, checked_at: new Date().toISOString() },
+      runs_failing: { reason, since, runs_missed: 4, checked_at: new Date().toISOString() },
+      unservable: { reason: 'runs_failing', detail: `runs failing: ${reason}`, since, retry_at: retryAt },
     })
-    expect(await main(['--home', home, 'doctor'])).toBe(1)
-    expect(out.join('\n')).toContain('FAIL listener-serving: this home gave the agent up: runs failing: claude: claude is not signed in (since')
-    out.length = 0
-    await main(['--home', home, 'status'])
-    expect(out.join('\n')).toContain('this home cannot serve @probe')
-
-    writeIntegrationStatus(home, { ...listenerRecord(), socket: 'idle', last_error: "this home cannot serve @probe: the server refuses this home's key (auth rejected). It holds no socket and starts no run until that is fixed (checked again every 300 s)." })
     out.length = 0
     await main(['--home', home, 'doctor'])
-    expect(out.join('\n')).toContain("WARN listener-serving: socket idle — this home cannot serve @probe: the server refuses this home's key")
+    expect(out.join('\n')).toContain(`FAIL listener-serving: this home gave the agent up to another listener that was waiting: runs failing: ${reason} (since ${since}); a runtime check that passes clears this`)
+
+    // A lone listener keeps serving while runs fail; lock renewal errors are said.
+    writeIntegrationStatus(home, { ...listenerRecord(), runs_failing: { reason, since, runs_missed: 4, checked_at: new Date().toISOString() }, lease_errors: { count: 3, last: 'ENOENT: the lock folder is gone' } })
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain(`WARN listener-serving: socket ready, but runs are failing: ${reason}`)
+    expect(out.join('\n')).toContain('WARN locks: 3 lock renewal(s) failed (last: ENOENT: the lock folder is gone)')
 
     writeIntegrationStatus(home, listenerRecord())
     out.length = 0

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs'
 import { hostedMcpUrl } from '@agentchatme/agent-core'
-import type { RunOutcome, RunPreflight, RunRequest, RunRunner, RunnerIdentity } from '@agentchatme/agent-core'
+import type { RunOutcome, RunPreflight, RunPreflightOptions, RunRequest, RunRunner, RunnerIdentity } from '@agentchatme/agent-core'
 import { spawnRun } from '@agentchatme/agent-core/daemon'
 import { log } from '@agentchatme/agent-core'
 
@@ -70,7 +70,9 @@ export class CommandRunner implements RunRunner {
     if (options.command.trim().length === 0) throw new Error('the run command is empty')
   }
 
-  async preflight(): Promise<RunPreflight> {
+  /** Its working directory is there. `signal` (the integration stopping) is honoured: nothing is checked once it is aborted. */
+  async preflight(options: RunPreflightOptions = {}): Promise<RunPreflight> {
+    if (options.signal?.aborted) return { ok: false, detail: 'the check was stopped' }
     const workdir = this.options.identity.workdir
     try {
       if (!fs.statSync(workdir).isDirectory()) return { ok: false, detail: `the working directory ${workdir} is not a directory` }

@@ -68,6 +68,14 @@ describe('CommandRunner — the owner\'s command, once per wake', () => {
     expect(env[RUN_ENV.wakeKind]).toBe('invite')
   })
 
+  it('preflight honours the integration stopping: once its signal is aborted nothing is checked or written', async () => {
+    const stopped = new AbortController()
+    stopped.abort()
+    expect(await new CommandRunner({ command: 'true', identity }).preflight({ signal: stopped.signal })).toEqual({ ok: false, detail: 'the check was stopped' })
+    fs.mkdirSync(identity.workdir, { recursive: true })
+    expect(await new CommandRunner({ command: 'true', identity }).preflight({ signal: new AbortController().signal })).toEqual({ ok: true })
+  })
+
   it('a command that is not found is NOT STARTED; a missing workdir fails preflight; an empty command is refused', async () => {
     const runner = new CommandRunner({ command: 'agentchat-no-such-command-' + process.pid, identity })
     const outcome = await runner.start({ kind: 'wake', prompt: 'p', runId: 'r', budgetMs: 20_000 })
