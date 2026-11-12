@@ -93,12 +93,26 @@ function presetWorkdir(io: FlagsIo): { workdir: string; note?: string } {
   return { workdir }
 }
 
+/**
+ * `--run`'s work folder when the flags name none: the directory `listen` ran
+ * in, with the line that says so when it is not the installed listener's.
+ * (`forward` runs nothing in its folder: no line.)
+ */
+function shellWorkdir(mode: 'listen' | 'forward', io: FlagsIo): { workdir: string; note?: string } {
+  const workdir = path.resolve(io.cwd)
+  const saved = io.saved ?? null
+  if (mode === 'listen' && saved !== null && saved.mode !== 'forward' && path.resolve(saved.workdir) !== workdir) {
+    return { workdir, note: `Work folder: ${workdir}, the directory listen ran in; the installed listener used ${saved.workdir} (--workdir ${saved.workdir} keeps that).` }
+  }
+  return { workdir }
+}
+
 /** The listener config the flags describe. Pure apart from reading `env` and `io.saved`. */
 export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, io: FlagsIo): Built {
   const budget = budgetMs(flags.budget)
   if (budget instanceof Error) return { ok: false, error: budget.message }
   const preset = mode === 'listen' && flags.preset !== undefined && flags.run === undefined
-  const chosen = flags.workdir !== undefined ? { workdir: path.resolve(io.cwd, flags.workdir) } : preset ? presetWorkdir(io) : { workdir: path.resolve(io.cwd) }
+  const chosen = flags.workdir !== undefined ? { workdir: path.resolve(io.cwd, flags.workdir) } : preset ? presetWorkdir(io) : shellWorkdir(mode, io)
   const workdir = chosen.workdir
   const note = chosen.note !== undefined ? { workdirNote: chosen.note } : {}
   const common = { version: 1 as const, workdir, ...(budget !== undefined ? { budget_ms: budget } : {}), updated_at: new Date().toISOString() }

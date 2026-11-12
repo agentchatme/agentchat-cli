@@ -206,9 +206,14 @@ describe('where a run works', () => {
     expect(moved).toMatchObject({ ok: true, config: { workdir: defaultPresetWorkdir(home) } })
     expect(moved.ok && moved.workdirNote).toBe(`Work folder: ${defaultPresetWorkdir(home)}, a folder of its own for the preset's runs; the installed listener used ${path.join(tmp, 'project')} (--workdir ${path.join(tmp, 'project')} keeps that).`)
 
-    // Named by the flags: no note. A run listener's folder follows the shell as before.
+    // Named by the flags: no note.
     expect(configFromFlags('listen', { preset: 'codex', workdir: 'elsewhere' }, { ...flagsIo(), saved: savedPreset })).not.toHaveProperty('workdirNote')
-    expect(configFromFlags('listen', { run: 'x' }, { ...flagsIo(), saved: savedRun })).not.toHaveProperty('workdirNote')
+    // A run listener's folder follows the shell, as before; a move off the installed listener's folder is said.
+    expect(configFromFlags('listen', { run: 'x' }, { ...flagsIo(), saved: { ...savedRun, workdir: tmp } })).not.toHaveProperty('workdirNote')
+    const toShell = configFromFlags('listen', { run: 'x' }, { ...flagsIo(), saved: savedPreset })
+    expect(toShell).toMatchObject({ ok: true, config: { mode: 'run', workdir: tmp } })
+    expect(toShell.ok && toShell.workdirNote).toBe(`Work folder: ${tmp}, the directory listen ran in; the installed listener used ${path.join(tmp, 'old-cwd')} (--workdir ${path.join(tmp, 'old-cwd')} keeps that).`)
+    expect(configFromFlags('forward', { to: 'http://localhost:9/w' }, { ...flagsIo(), saved: savedPreset })).not.toHaveProperty('workdirNote')
   })
 
   it('listen --preset --install creates the preset’s own folder owner-only, and a re-install with other flags keeps it and says so', async () => {
