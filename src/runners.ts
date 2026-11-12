@@ -1,5 +1,5 @@
 import { AgentChatClient, INBOX_TRAY_MAX_LIMIT, type TextsRuntime } from 'agentchatme'
-import { clientIdentityOf, manualPointer, MANUAL_URL, type IntegrationClient } from '@agentchatme/agent-core'
+import { clientIdentityOf, manualPointer, MANUAL_URL, type IntegrationClient, type RunProfile } from '@agentchatme/agent-core'
 import { CommandRunner } from './listener/command-runner.js'
 import { ForwardRunner } from './listener/forward.js'
 import { type ListenerConfig } from './listener/config.js'
@@ -30,6 +30,20 @@ export interface PlanOptions {
   readonly fetch?: typeof fetch
 }
 
+/**
+ * The line a preset run's prompt ends with: where the manual is, as that run
+ * can reach it. An `answer` run reaches neither the file (outside its work
+ * folder; a Codex answer run has no file tool at all) nor the web, so its
+ * prompt ends with the served instruction alone: the hosted tools and the
+ * served texts are everything it has. A `work` or `full` run that cannot read
+ * the identity home (Claude Code: it is denied) is pointed at the address; one
+ * that can, at the file.
+ */
+export function presetPointer(preset: Pick<Preset, 'readsIdentityHome'>, profile: RunProfile, manualPath: string): string {
+  if (profile === 'answer') return ''
+  return preset.readsIdentityHome ? manualPointer(`at ${manualPath}`) : `(The AgentChat manual is at ${MANUAL_URL}.)`
+}
+
 /** Thrown for a config that names a preset this build does not have. */
 export class UnknownPresetError extends Error {}
 
@@ -55,8 +69,7 @@ export function planListener(home: string, config: ListenerConfig, options: Plan
       return {
         client: cliClient(runtime),
         manualPath,
-        // A run that cannot read the identity home is pointed at the address, not at a file it is denied.
-        manualPointer: preset.readsIdentityHome ? manualPointer(`at ${manualPath}`) : `(The AgentChat manual is at ${MANUAL_URL}.)`,
+        manualPointer: presetPointer(preset, config.profile, manualPath),
         preset,
         runner: {
           name: preset.name,

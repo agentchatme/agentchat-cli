@@ -1,7 +1,8 @@
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { ensureForwardSecret, forwardSecretPath, forwardUrlProblem } from './listener/forward.js'
-import { describeListenerConfig, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
-import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
+import { defaultPresetWorkdir, describeListenerConfig, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
+import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, PEER_RUN_WARNING, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
 import { invocation, offByLegacySwitch } from './home.js'
@@ -18,6 +19,18 @@ import { installListenerService, listenerServiceStatus, uninstallListenerService
 // to `<home>/listener.json` and a background service runs it from then on.
 // One listener per identity home (the engine's leader lock): a foreground
 // listener on a home whose service is running is refused.
+//
+// Where a run works. `--run` and `forward`: the directory `listen` ran in
+// (`--workdir` to change it) — the owner's command decides what it reads, and
+// its relative paths mean what they meant in that shell. A preset: a folder of
+// its own beside the home (`defaultPresetWorkdir`), in every profile. A
+// preset's run is started by any peer's message, a stranger's cold DM
+// included: an `answer` run reads every file in its work folder, and a `work`
+// run edits there without asking, so the default is an empty folder rather
+// than whatever directory the install happened to run in; `--workdir <dir>`
+// is the opt-in to give runs a project. A re-install keeps the folder the
+// installed preset listener already has, and any change to an installed
+// listener's folder that the flags did not ask for is said in one line.
 
 export interface ListenFlags {
   readonly run?: string | undefined
@@ -46,7 +59,17 @@ export interface ListenIo {
   readonly plan?: PlanOptions
 }
 
-type Built = { ok: true; config: ListenerConfigInput } | { ok: false; error: string }
+/** A listener config the flags describe, and a line to print when its work folder is not the one the flags or the installed listener named. */
+type Built = { ok: true; config: ListenerConfigInput; workdirNote?: string } | { ok: false; error: string }
+
+export interface FlagsIo {
+  readonly env: NodeJS.ProcessEnv
+  readonly cwd: string
+  /** The identity home: a preset's default work folder sits beside it. */
+  readonly home: string
+  /** The installed listener's config (`--install` only): its work folder is kept when the flags name none. */
+  readonly saved?: ListenerConfig | null
+}
 
 function budgetMs(raw: string | undefined): number | undefined | Error {
   if (raw === undefined) return undefined
@@ -55,11 +78,29 @@ function budgetMs(raw: string | undefined): number | undefined | Error {
   return Math.round(seconds * 1000)
 }
 
-/** The listener config the flags describe. Pure apart from reading `env`. */
-export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, io: { env: NodeJS.ProcessEnv; cwd: string }): Built {
+/**
+ * A preset's work folder when the flags name none: the installed preset
+ * listener's (kept), else a folder of its own beside the home. With the line
+ * that says so when that is not the installed listener's folder.
+ */
+function presetWorkdir(io: FlagsIo): { workdir: string; note?: string } {
+  const saved = io.saved ?? null
+  if (saved !== null && saved.mode === 'preset') return { workdir: saved.workdir, note: `Work folder: ${saved.workdir}, kept from the installed listener (--workdir <dir> changes it).` }
+  const workdir = defaultPresetWorkdir(io.home)
+  if (saved !== null && saved.mode !== 'forward' && path.resolve(saved.workdir) !== workdir) {
+    return { workdir, note: `Work folder: ${workdir}, a folder of its own for the preset's runs; the installed listener used ${saved.workdir} (--workdir ${saved.workdir} keeps that).` }
+  }
+  return { workdir }
+}
+
+/** The listener config the flags describe. Pure apart from reading `env` and `io.saved`. */
+export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, io: FlagsIo): Built {
   const budget = budgetMs(flags.budget)
   if (budget instanceof Error) return { ok: false, error: budget.message }
-  const workdir = path.resolve(io.cwd, flags.workdir ?? '.')
+  const preset = mode === 'listen' && flags.preset !== undefined && flags.run === undefined
+  const chosen = flags.workdir !== undefined ? { workdir: path.resolve(io.cwd, flags.workdir) } : preset ? presetWorkdir(io) : { workdir: path.resolve(io.cwd) }
+  const workdir = chosen.workdir
+  const note = chosen.note !== undefined ? { workdirNote: chosen.note } : {}
   const common = { version: 1 as const, workdir, ...(budget !== undefined ? { budget_ms: budget } : {}), updated_at: new Date().toISOString() }
 
   if (mode === 'forward') {
@@ -75,14 +116,16 @@ export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, 
   if (flags.run !== undefined) {
     if (flags.run.trim().length === 0) return { ok: false, error: '--run needs a command' }
     if (flags.profile !== undefined) return { ok: false, error: '--profile belongs to a preset; your command decides what its runs may do' }
-    return { ok: true, config: { ...common, mode: 'run', command: flags.run, with_key: flags.withKey === true } }
+    return { ok: true, config: { ...common, mode: 'run', command: flags.run, with_key: flags.withKey === true }, ...note }
   }
   if (flags.preset !== undefined) {
     if (flags.withKey === true) return { ok: false, error: '--with-key belongs to --run; a preset hands its runs the key itself' }
     if (presetNamed(flags.preset) === null) return { ok: false, error: `unknown preset "${flags.preset}" (presets: ${presetNames().join(', ')})` }
-    if (flags.profile !== undefined && !isRunProfile(flags.profile)) return { ok: false, error: '--profile is answer, work or full' }
+    if (flags.profile !== undefined && !isRunProfile(flags.profile)) {
+      return { ok: false, error: `--profile is answer, work or full (answer, the default: the AgentChat tools and reads inside the run's work folder only; work and full: ${PEER_RUN_WARNING})` }
+    }
     const profile = flags.profile !== undefined && isRunProfile(flags.profile) ? flags.profile : resolveRunProfile(io.env)
-    return { ok: true, config: { ...common, mode: 'preset', preset: flags.preset, profile } }
+    return { ok: true, config: { ...common, mode: 'preset', preset: flags.preset, profile }, ...note }
   }
   return { ok: false, error: `Missing what to run. Usage: ${invocation(io.env)} listen --run "<command>"  or  ${invocation(io.env)} listen --preset <${presetNames().join('|')}>` }
 }
@@ -113,6 +156,7 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
   // `listen --install` with nothing else re-installs what is saved.
   const nothingGiven = flags.run === undefined && flags.preset === undefined && flags.to === undefined
   let config: ListenerConfig
+  let workdirNote: string | null = null
   if (flags.install === true && nothingGiven && mode === 'listen') {
     const saved = readListenerConfig(home)
     if (!saved.ok) {
@@ -121,11 +165,13 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
     }
     config = saved.config
   } else {
-    const built = configFromFlags(mode, flags, { env, cwd })
+    const saved = flags.install === true ? readListenerConfig(home) : null
+    const built = configFromFlags(mode, flags, { env, cwd, home, saved: saved?.ok === true ? saved.config : null })
     if (!built.ok) {
       io.err(built.error)
       return 1
     }
+    workdirNote = built.workdirNote ?? null
     if (flags.install === true) config = writeListenerConfig(home, built.config)
     else {
       const parsed = ListenerConfigSchema.safeParse(built.config)
@@ -146,6 +192,17 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
   }
   const identity = resolveIdentity(home, { envKey: false })
   const forwardNote = config.mode === 'forward' ? [`Bearer secret: ${forwardSecretPath(home)} — your endpoint checks \`Authorization: Bearer <that file's contents>\`.`] : []
+  // A preset's own folder is created here, owner-only, so it is there (and the
+  // owner's alone) before the first run and for `doctor`. A folder the owner named is theirs.
+  if (config.mode === 'preset' && config.workdir === defaultPresetWorkdir(home)) {
+    try {
+      fs.mkdirSync(config.workdir, { recursive: true, mode: 0o700 })
+    } catch (err) {
+      io.err(`Could not create the work folder ${config.workdir}: ${err instanceof Error ? err.message : String(err)}`)
+      return 1
+    }
+  }
+  const workdirLines = workdirNote !== null ? [workdirNote] : []
 
   if (flags.install === true) {
     if (config.mode === 'forward') ensureForwardSecret(home)
@@ -163,6 +220,7 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
       io.out(
         [
           `Listener installed (${label}): ${describeListenerConfig(config)}.`,
+          ...workdirLines.map((l) => `  ${l}`),
           `  ${listenerServiceStatus(home)}`,
           ...(offByLegacySwitch(env) ? [`  Held off: ${INTEGRATION_ENV_LEGACY}=${env[INTEGRATION_ENV_LEGACY]?.trim() ?? 'off'}, the old name of ${INTEGRATION_ENV}, is captured as ${INTEGRATION_ENV}=off — the service holds no socket and starts no run; set ${INTEGRATION_ENV}=off instead.`] : []),
           ...forwardNote.map((l) => `  ${l}`),
@@ -187,6 +245,7 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
   io.out(
     [
       `Listening as @${identity.handle ?? '?'} — on each wake: ${describeListenerConfig(config).replace(/^runs/, 'run').replace(/^forwards/, 'forward')}.`,
+      ...workdirLines,
       ...forwardNote,
       'One run at a time; the served wake instruction goes to stdin; no message content is ever on a command line. Ctrl-C stops.',
     ].join('\n'),

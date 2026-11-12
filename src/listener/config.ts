@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import { z } from 'zod'
-import { RUN_PROFILES } from '@agentchatme/agent-core'
+import { RUN_PROFILES, runProfileWarning } from '@agentchatme/agent-core'
 import { atomicWriteFile, readJsonFile } from '@agentchatme/agent-core'
 
 // ─── What the installed listener runs ───────────────────────────────────────
@@ -14,7 +14,10 @@ import { atomicWriteFile, readJsonFile } from '@agentchatme/agent-core'
 //
 //   run      the owner's command line, through the shell, prompt on stdin
 //   preset   a known coding agent's headless mode (`--preset <name>`) with a
-//            run profile, acting as this home's agent
+//            run profile, acting as this home's agent: `answer` (the default)
+//            gives a run the AgentChat tools and reads inside its work folder
+//            only; with `work` or `full`, runs started by peers' messages can
+//            read and change this machine
 //   forward  each wake POSTed to the owner's endpoint (the `agentchat` dialect)
 
 export const LISTENER_CONFIG_FILE = 'listener.json'
@@ -56,6 +59,16 @@ export function listenerConfigPath(home: string): string {
   return path.join(home, LISTENER_CONFIG_FILE)
 }
 
+/**
+ * Where a preset's runs work when `--workdir` names nowhere: `<home>-workdir`,
+ * a folder of its own BESIDE the identity home. Never inside it: a Claude Code
+ * preset run is denied the home, so a work folder there is one it cannot read.
+ */
+export function defaultPresetWorkdir(home: string): string {
+  const resolved = path.resolve(home)
+  return path.join(path.dirname(resolved), `${path.basename(resolved)}-workdir`)
+}
+
 export type ListenerConfigRead = { ok: true; config: ListenerConfig } | { ok: false; error: string }
 
 export function readListenerConfig(home: string): ListenerConfigRead {
@@ -80,8 +93,10 @@ export function describeListenerConfig(config: ListenerConfig): string {
   switch (config.mode) {
     case 'run':
       return `runs \`${config.command}\` in ${config.workdir}${config.with_key ? ' (key in its environment)' : ''}`
-    case 'preset':
-      return `runs the ${config.preset} preset (profile ${config.profile}) in ${config.workdir}`
+    case 'preset': {
+      const warning = runProfileWarning(config.profile)
+      return `runs the ${config.preset} preset (profile ${config.profile}${warning !== null ? ` — ${warning}` : ''}) in ${config.workdir}`
+    }
     case 'forward':
       return `forwards each wake to ${config.url}`
   }

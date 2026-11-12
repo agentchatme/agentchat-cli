@@ -2,6 +2,23 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## [Unreleased]
+
+The number is set at the release step (`VERSIONING.md`). Bundles the next `@agentchatme/agent-core` release (the safe `answer` profile, one agent one listener, the async runtime probes); the exact pin is set at the release step.
+
+### Fixed
+
+- **Security: a preset's `answer` run (the default) has the AgentChat tools and reads inside its own work folder, and nothing else.** A preset run is started by any peer's message, a stranger's cold DM included. Through the engine's answer profile it now has no web, no shell, no edits, no other MCP server and nothing outside its work folder; Claude Code also loads no `CLAUDE.md`, memory or hooks (the served identity line is given to the run), and Codex no project `AGENTS.md`.
+- **An answer run's prompt no longer points at a manual it cannot reach** (the file outside its work folder, or the address it has no web for); `work` and `full` keep the pointer.
+
+### Changed
+
+- **Behaviour change: a preset's runs work in a folder of their own, `<home>-workdir`** (`~/.agentchat-workdir` for the default home), created owner-only — in every profile — instead of the directory `listen` ran in: an answer run reads every file in its work folder and a `work` run edits there, so the default is an empty folder. `--workdir <dir>` names another. An installed listener is not moved: its `listener.json` keeps its folder, a re-install (`listen --preset … --install` without `--workdir`) keeps the installed preset listener's folder and says so, and any other change the flags did not ask for is said in one line. `--run` and `forward` keep the directory `listen` ran in.
+- **Behaviour change: a Claude Code preset's answer runs do not start while a Claude Code settings file lists `permissions.additionalDirectories`, and a Codex preset's while one of Codex's MCP servers cannot be switched off for a run (a `.` in its name).** `doctor` shows the preset's own preflight (`preset-preflight`) in its words, and never rewrites the tool config a running listener's runs use; it also warns about a work folder that is the home folder or contains it.
+- `listen`, `status` and `doctor` name the engine's warning next to `work` and `full` (runs started by peers' messages can read and change this machine); the help, README and SECURITY.md say what each profile lets a run do.
+- `logout` says what it removed from `<home>/presets/` (the tool config that holds the key, and what an interrupted run left) and removes the folder; `listen --uninstall` already removed it.
+- One agent, one listener: when this listener and a Claude Code or Codex integration (or another listener home) hold the same agent's key, one serves it and the other stands by (no socket, no run); `status` and `doctor` name the home that serves it, and say when runs keep failing for a runtime reason.
+
 ## 0.1.1 — 2026-11-11
 
 Fixed and adjusted existing behaviour (the number is set at the release step, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.4.1 (pinned exactly) and `agentchatme` 1.3.0.
