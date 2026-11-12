@@ -494,6 +494,32 @@ describe('status --json', () => {
     expect(out.join('\n')).toContain('WARN single-listener: another listener serves this agent: /elsewhere/.claude/agentchat (pid 4243)')
   })
 
+  it('a listener that gave the agent up — runs kept failing, or a refused key — is said by doctor; a serving one too', { timeout: 30_000 }, async () => {
+    signIn('http://127.0.0.1:9')
+    const since = new Date(Date.now() - 120_000).toISOString()
+    writeIntegrationStatus(home, {
+      ...listenerRecord(),
+      socket: 'idle',
+      last_error: 'this home cannot serve @probe: runs failing: claude: claude is not signed in. It holds no socket and starts no run until that is fixed (checked again every 60 s); another listener for @probe may serve it meanwhile.',
+      runs_failing: { reason: 'claude: claude is not signed in', since, runs_missed: 4, checked_at: new Date().toISOString() },
+    })
+    expect(await main(['--home', home, 'doctor'])).toBe(1)
+    expect(out.join('\n')).toContain('FAIL listener-serving: this home gave the agent up: runs failing: claude: claude is not signed in (since')
+    out.length = 0
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).toContain('this home cannot serve @probe')
+
+    writeIntegrationStatus(home, { ...listenerRecord(), socket: 'idle', last_error: "this home cannot serve @probe: the server refuses this home's key (auth rejected). It holds no socket and starts no run until that is fixed (checked again every 300 s)." })
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain("WARN listener-serving: socket idle — this home cannot serve @probe: the server refuses this home's key")
+
+    writeIntegrationStatus(home, listenerRecord())
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain('PASS listener-serving: serving @probe (socket ready, 1 run(s), 1 ok)')
+  })
+
   it('no identity: `integration`, and no `doorbell` key', async () => {
     expect(await main(['--home', home, 'status', '--json'])).toBe(0)
     const parsed = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>

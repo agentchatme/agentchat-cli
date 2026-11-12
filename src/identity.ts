@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { alwaysOnWanted, checkManual, DEFAULT_API_BASE, createIdentityCommands, describeManualSync, probeHostedMcp, readCredentials, renderAnchorBlock, resolveIdentity, syncManual, workdirExposesHome, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type RunProfile, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
+import { alwaysOnWanted, checkManual, DEFAULT_API_BASE, createIdentityCommands, describeManualSync, integrationStatusAge, probeHostedMcp, readCredentials, readIntegrationStatus, renderAnchorBlock, resolveIdentity, syncManual, workdirExposesHome, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type RunProfile, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
 import { describeListenerConfig, readListenerConfig, type ListenerConfig } from './listener/config.js'
 import { forwardUrlProblem, readForwardSecret } from './listener/forward.js'
 import {
@@ -215,6 +215,38 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
   return checks
 }
 
+/**
+ * Whether the listener serves its agent, as its own status file says (every
+ * listener rewrites it while it runs — standing by or waiting to serve again
+ * too). Null when there is nothing to say: no identity, no status, standing by
+ * (the shared `single-listener` check says that), or an old file from a
+ * foreground listener when no service is installed.
+ */
+export function servingCheck(home: string): DoctorCheck | null {
+  if (readCredentials(home) === null) return null
+  const status = readIntegrationStatus(home)
+  if (status === null || (status.standby ?? null) !== null) return null
+  const age = integrationStatusAge(status) ?? Number.POSITIVE_INFINITY
+  if (age > 3 * 60_000) return alwaysOnWanted(home) ? check('listener-serving', 'FAIL', `status last written ${Math.round(age / 60_000)} min ago — the listener service is not running`) : null
+  if (status.socket === 'off') return check('listener-serving', 'PASS', 'switched off — resident, holding no socket')
+  const failing = status.runs_failing ?? null
+  // A home whose runs kept failing gives the agent up (no socket, no run) so a healthy listener for it can serve.
+  if (failing !== null && status.socket !== 'ready') {
+    return check(
+      'listener-serving',
+      'FAIL',
+      `this home gave the agent up: runs failing: ${failing.reason} (since ${failing.since}, ${failing.runs_missed} run(s) missed); it holds no socket and starts no run until that is fixed (checked again every minute), and another listener for this agent may serve it meanwhile`,
+    )
+  }
+  if (status.socket === 'ready') {
+    return failing !== null
+      ? check('listener-serving', 'WARN', `socket ready, but runs are failing: ${failing.reason}`)
+      : check('listener-serving', 'PASS', `serving @${status.handle ?? '?'} (socket ready, ${status.runs_started} run(s), ${status.runs_ok} ok)`)
+  }
+  // Not serving for another reason, in the listener's own words (not connecting yet; a key the server refuses, after which it gave the agent up).
+  return check('listener-serving', 'WARN', `socket ${status.socket}${status.last_error ? ` — ${status.last_error}` : ''}`)
+}
+
 function serviceCheck(home: string, config: ListenerConfig | null, fix: boolean): DoctorCheck | null {
   if (!alwaysOnWanted(home)) return null
   const extraEnv = config?.mode === 'preset' ? (presetNamed(config.preset)?.serviceEnv ?? []) : []
@@ -292,6 +324,8 @@ export function cliProfile(home: string, env: NodeJS.ProcessEnv = process.env): 
       }
       const service = serviceCheck(home, config, ctx.fix === true)
       if (service !== null) checks.push(service)
+      const serving = servingCheck(home)
+      if (serving !== null) checks.push(serving)
       if (identity !== null) {
         const reach = await probeHostedMcp({ apiKey: identity.apiKey, apiBase: identity.apiBase, client: cliClient() })
         checks.push(check('hosted-tools', reach.ok ? 'PASS' : 'FAIL', reach.ok ? `${reach.serverName ?? 'reachable'} ${reach.serverVersion ?? ''}`.trim() : (reach.error ?? 'unreachable')))
