@@ -9,12 +9,14 @@ import { configFromFlags, runListen } from '../src/listen.js'
 import { bindPositionals, renderResult } from '../src/tools.js'
 import { terminalSafe } from '../src/terminal.js'
 import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceEnvFrom, serviceLabelForHome } from '../src/home.js'
-import { homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
+import { claudePresetDenyPaths, homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
-import { listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
+import { defaultPresetWorkdir, describeListenerConfig, listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
-import { alwaysOnWanted, writeIntegrationStatus, type IntegrationStatus } from '@agentchatme/agent-core'
-import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
+import { presetPointer } from '../src/runners.js'
+import { alwaysOnWanted, manualPointer, MANUAL_URL, PEER_RUN_WARNING, writeIntegrationStatus, type IntegrationStatus } from '@agentchatme/agent-core'
+import { claudeMcpConfigPath, claudeCodePreset, codexPreset } from '@agentchatme/agent-core/presets'
+import { installFakeClaude, installFakeCodex } from './helpers/fake-runtimes.js'
 import { INBOX_TOOL, SEND_TOOL, startMcpDouble, type McpDouble } from './helpers/mcp-double.js'
 
 // ─── The `agentchat` CLI: its arguments, the tools through it, install ──────
@@ -75,11 +77,11 @@ describe('arguments', () => {
   })
 
   it('listen/forward flags become one config, or one clear refusal', () => {
-    const io = { env: {}, cwd: tmp }
+    const io = { env: {}, cwd: tmp, home }
     const run = configFromFlags('listen', { run: 'my-agent --once', budget: '30' }, io)
     expect(run).toMatchObject({ ok: true, config: { mode: 'run', command: 'my-agent --once', workdir: tmp, budget_ms: 30_000, with_key: false } })
     expect(configFromFlags('listen', { preset: 'codex', profile: 'work', workdir: 'sub' }, io)).toMatchObject({ ok: true, config: { mode: 'preset', preset: 'codex', profile: 'work', workdir: path.join(tmp, 'sub') } })
-    expect(configFromFlags('listen', { preset: 'claude-code' }, { env: { AGENTCHAT_RUN_PROFILE: 'full' }, cwd: tmp })).toMatchObject({ ok: true, config: { profile: 'full' } })
+    expect(configFromFlags('listen', { preset: 'claude-code' }, { env: { AGENTCHAT_RUN_PROFILE: 'full' }, cwd: tmp, home })).toMatchObject({ ok: true, config: { profile: 'full' } })
     expect(configFromFlags('forward', { to: 'http://localhost:9/w' }, io)).toMatchObject({ ok: true, config: { mode: 'forward', url: 'http://localhost:9/w' } })
 
     const refused = (built: ReturnType<typeof configFromFlags>): string => (built.ok ? 'accepted' : built.error)
@@ -90,6 +92,9 @@ describe('arguments', () => {
     expect(refused(configFromFlags('listen', { preset: 'codex', withKey: true }, io))).toMatch(/belongs to --run/)
     expect(refused(configFromFlags('listen', { run: 'a', budget: '0' }, io))).toMatch(/seconds/)
     expect(refused(configFromFlags('forward', { to: 'http://example.com/x' }, io))).toMatch(/only to this machine/)
+    expect(refused(configFromFlags('listen', { preset: 'codex', profile: 'all' }, io))).toBe(
+      `--profile is answer, work or full (answer, the default: the AgentChat tools and reads inside the run's work folder only; work and full: ${PEER_RUN_WARNING})`,
+    )
     expect(refused(configFromFlags('forward', {}, io))).toMatch(/Missing --to/)
   })
 
@@ -169,6 +174,83 @@ describe('pure helpers', () => {
 
   it('terminalSafe keeps newlines and tabs, drops escapes and controls', () => {
     expect(terminalSafe('a\tb\nc\u001B[31mred\u001B[0m\u0007\u009B2J\r')).toBe('a\tb\ncred')
+  })
+})
+
+describe('where a run works', () => {
+  // A preset's run is started by any peer's message: by default it gets a
+  // folder of its own beside the home, never the directory `listen` ran in.
+  // `--run` keeps the directory it ran in (the owner's command, its relative
+  // paths). An installed listener's folder is never changed without a line saying so.
+  const flagsIo = () => ({ env: {}, cwd: tmp, home })
+
+  it('a preset, every profile: a folder of its own beside the home (never inside it: a Claude Code run is denied the home); --workdir names another', () => {
+    expect(defaultPresetWorkdir(home)).toBe(path.join(tmp, 'agentchat-home-workdir'))
+    expect(defaultPresetWorkdir(home + path.sep)).toBe(path.join(tmp, 'agentchat-home-workdir'))
+    for (const profile of ['answer', 'work', 'full']) {
+      expect(configFromFlags('listen', { preset: 'claude-code', profile }, flagsIo())).toMatchObject({ ok: true, config: { workdir: defaultPresetWorkdir(home) } })
+    }
+    expect(configFromFlags('listen', { preset: 'codex', workdir: 'proj' }, flagsIo())).toMatchObject({ ok: true, config: { workdir: path.join(tmp, 'proj') } })
+    expect(configFromFlags('listen', { run: 'my-agent' }, flagsIo())).toMatchObject({ ok: true, config: { workdir: tmp } })
+    expect(configFromFlags('forward', { to: 'http://localhost:9/w' }, flagsIo())).toMatchObject({ ok: true, config: { workdir: tmp } })
+  })
+
+  it('a re-install keeps the installed preset listener’s folder, and says so; a change the flags did not ask for is said in one line', () => {
+    const base = { version: 1 as const, updated_at: 'x' }
+    const savedPreset = { ...base, mode: 'preset' as const, preset: 'codex', profile: 'answer' as const, workdir: path.join(tmp, 'old-cwd') }
+    const kept = configFromFlags('listen', { preset: 'claude-code', profile: 'work' }, { ...flagsIo(), saved: savedPreset })
+    expect(kept).toMatchObject({ ok: true, config: { workdir: path.join(tmp, 'old-cwd'), profile: 'work' }, workdirNote: `Work folder: ${path.join(tmp, 'old-cwd')}, kept from the installed listener (--workdir <dir> changes it).` })
+
+    const savedRun = { ...base, mode: 'run' as const, command: 'x', with_key: false, workdir: path.join(tmp, 'project') }
+    const moved = configFromFlags('listen', { preset: 'codex' }, { ...flagsIo(), saved: savedRun })
+    expect(moved).toMatchObject({ ok: true, config: { workdir: defaultPresetWorkdir(home) } })
+    expect(moved.ok && moved.workdirNote).toBe(`Work folder: ${defaultPresetWorkdir(home)}, a folder of its own for the preset's runs; the installed listener used ${path.join(tmp, 'project')} (--workdir ${path.join(tmp, 'project')} keeps that).`)
+
+    // Named by the flags: no note.
+    expect(configFromFlags('listen', { preset: 'codex', workdir: 'elsewhere' }, { ...flagsIo(), saved: savedPreset })).not.toHaveProperty('workdirNote')
+    // A run listener's folder follows the shell, as before; a move off the installed listener's folder is said.
+    expect(configFromFlags('listen', { run: 'x' }, { ...flagsIo(), saved: { ...savedRun, workdir: tmp } })).not.toHaveProperty('workdirNote')
+    const toShell = configFromFlags('listen', { run: 'x' }, { ...flagsIo(), saved: savedPreset })
+    expect(toShell).toMatchObject({ ok: true, config: { mode: 'run', workdir: tmp } })
+    expect(toShell.ok && toShell.workdirNote).toBe(`Work folder: ${tmp}, the directory listen ran in; the installed listener used ${path.join(tmp, 'old-cwd')} (--workdir ${path.join(tmp, 'old-cwd')} keeps that).`)
+    expect(configFromFlags('forward', { to: 'http://localhost:9/w' }, { ...flagsIo(), saved: savedPreset })).not.toHaveProperty('workdirNote')
+  })
+
+  it('listen --preset --install creates the preset’s own folder owner-only, and a re-install with other flags keeps it and says so', async () => {
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    const lines: string[] = []
+    const ioi = { out: (l: string) => lines.push(l), err: (l: string) => lines.push(l), cwd: path.join(tmp, 'user'), shipped }
+    expect(await runListen(home, 'listen', { preset: 'codex', install: true }, ioi)).toBe(0)
+    const folder = defaultPresetWorkdir(home)
+    expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { mode: 'preset', workdir: folder } })
+    expect(fs.statSync(folder).isDirectory()).toBe(true)
+    if (process.platform !== 'win32') expect(fs.statSync(folder).mode & 0o777).toBe(0o700)
+
+    // An installed preset listener whose folder was the old default (the directory listen ran in) keeps it.
+    writeListenerConfig(home, { version: 1, mode: 'preset', preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'user'), updated_at: 'x' })
+    lines.length = 0
+    expect(await runListen(home, 'listen', { preset: 'codex', profile: 'work', install: true }, ioi)).toBe(0)
+    expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { profile: 'work', workdir: path.join(tmp, 'user') } })
+    expect(lines.join('\n')).toContain(`Work folder: ${path.join(tmp, 'user')}, kept from the installed listener`)
+    expect(lines.join('\n')).toContain(`profile work — ${PEER_RUN_WARNING}`)
+  })
+})
+
+describe('a preset run’s prompt and the profile words', () => {
+  it('an answer run’s prompt carries no pointer to a manual it cannot reach; work and full get the file or the address, as the run can read it', () => {
+    const file = manualPathFor(home)
+    for (const preset of [claudeCodePreset, codexPreset]) expect(presetPointer(preset, 'answer', file)).toBe('')
+    for (const profile of ['work', 'full'] as const) {
+      expect(presetPointer(claudeCodePreset, profile, file)).toBe(`(The AgentChat manual is at ${MANUAL_URL}.)`) // the home is denied to it
+      expect(presetPointer(codexPreset, profile, file)).toBe(manualPointer(`at ${file}`))
+    }
+  })
+
+  it('a preset listener’s description names the engine’s warning next to work and full', () => {
+    const base = { version: 1 as const, updated_at: 'x', mode: 'preset' as const, preset: 'codex', workdir: '/w' }
+    expect(describeListenerConfig({ ...base, profile: 'answer' })).toBe('runs the codex preset (profile answer) in /w')
+    expect(describeListenerConfig({ ...base, profile: 'full' })).toBe(`runs the codex preset (profile full — ${PEER_RUN_WARNING}) in /w`)
   })
 })
 
@@ -265,20 +347,98 @@ describe('listen --install / --uninstall (dry run, sandbox HOME)', () => {
 })
 
 describe('logout and doctor', () => {
-  it('logout removes the key from a preset\'s tool config too', () => {
+  it('logout removes the key from a preset\'s tool config, what an interrupted run left beside it, and the folder', () => {
     const file = claudeMcpConfigPath(home)
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, JSON.stringify({ key: KEY }))
-    expect(removeKeyFiles(home)).toHaveLength(1)
-    expect(fs.existsSync(file)).toBe(false)
+    fs.writeFileSync(path.join(path.dirname(file), 'claude-code.mcp.run-1.identity.md'), 'I am @probe on AgentChat.\n')
+    expect(removeKeyFiles(home)).toEqual([`  removed 2 preset file(s) from ${path.dirname(file)}: the tool config that holds the key, and what an interrupted run left`])
+    expect(fs.existsSync(path.dirname(file))).toBe(false)
     expect(removeKeyFiles(home)).toEqual([])
   })
 
-  it('doctor checks a missing workdir, an unknown preset, a bad forward address', () => {
+  it('doctor checks a missing workdir, an unknown preset, a bad forward address', async () => {
     const base = { version: 1 as const, updated_at: 'x' }
-    expect(listenerChecks(home, { ...base, mode: 'run', command: 'a', with_key: false, workdir: path.join(tmp, 'gone') }).find((c) => c.name === 'workdir')?.verdict).toBe('FAIL')
-    expect(listenerChecks(home, { ...base, mode: 'preset', preset: 'nope', profile: 'answer', workdir: tmp }).find((c) => c.name === 'preset')?.verdict).toBe('FAIL')
-    expect(listenerChecks(home, { ...base, mode: 'forward', url: 'http://example.com/', workdir: tmp }).find((c) => c.name === 'forward')?.verdict).toBe('FAIL')
+    expect((await listenerChecks(home, { ...base, mode: 'run', command: 'a', with_key: false, workdir: path.join(tmp, 'gone') })).find((c) => c.name === 'workdir')?.verdict).toBe('FAIL')
+    expect((await listenerChecks(home, { ...base, mode: 'preset', preset: 'nope', profile: 'answer', workdir: tmp })).find((c) => c.name === 'preset')?.verdict).toBe('FAIL')
+    expect((await listenerChecks(home, { ...base, mode: 'forward', url: 'http://example.com/', workdir: tmp })).find((c) => c.name === 'forward')?.verdict).toBe('FAIL')
+  })
+
+  describe('the preset’s own preflight, in its words', () => {
+    const base = { version: 1 as const, updated_at: 'x', mode: 'preset' as const }
+    const originalPath = process.env['PATH']
+    afterEach(() => {
+      process.env['PATH'] = originalPath
+    })
+    const preflight = async (preset: string, profile: 'answer' | 'work', env: NodeJS.ProcessEnv, workdir = path.join(tmp, 'w')) =>
+      (await listenerChecks(home, { ...base, preset, profile, workdir }, env)).find((c) => c.name === 'preset-preflight')
+
+    it('Claude Code: an answer run refuses while the user’s settings list permissions.additionalDirectories; work does not; the listener’s own tool config is never written', async () => {
+      signIn('https://api.agentchat.test')
+      const fake = installFakeClaude(tmp)
+      process.env['PATH'] = `${fake.binDir}${path.delimiter}${originalPath ?? ''}`
+      const configDir = path.join(tmp, 'user', '.claude')
+      const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir }
+      expect(await preflight('claude-code', 'answer', env)).toMatchObject({ verdict: 'PASS' })
+      fs.mkdirSync(configDir, { recursive: true })
+      fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ permissions: { additionalDirectories: [path.join(tmp, 'shared')] } }))
+      const refused = await preflight('claude-code', 'answer', env)
+      expect(refused?.verdict).toBe('FAIL')
+      expect(refused?.detail).toContain(`Claude Code: no run starts: answer runs do not start while ${path.join(configDir, 'settings.json')} lists permissions.additionalDirectories`)
+      expect(await preflight('claude-code', 'work', env)).toMatchObject({ verdict: 'PASS' })
+      expect(fs.existsSync(claudeMcpConfigPath(home))).toBe(false)
+    })
+
+    it('Codex: an MCP server no -c key can switch off stops answer runs; the listing ran as the listener’s would', async () => {
+      signIn('https://api.agentchat.test')
+      const fake = installFakeCodex(tmp)
+      process.env['PATH'] = `${fake.binDir}${path.delimiter}${originalPath ?? ''}`
+      const env = { ...process.env, CODEX_HOME: path.join(tmp, 'user', '.codex') }
+      expect(await preflight('codex', 'answer', env)).toMatchObject({ verdict: 'PASS' })
+      const refused = await preflight('codex', 'answer', { ...env, FAKE_MCP_LIST: JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'team.notes', enabled: true }]) })
+      expect(refused?.verdict).toBe('FAIL')
+      expect(refused?.detail).toContain("Codex: no run starts: could not list Codex's MCP servers")
+      expect(refused?.detail).toContain('"team.notes" cannot be switched off')
+    })
+
+    it('a work folder that holds a key store a run could read is said; a preset’s missing folder is created by its preflight, as the listener’s start would', async () => {
+      const fake = installFakeCodex(tmp)
+      process.env['PATH'] = `${fake.binDir}${path.delimiter}${originalPath ?? ''}`
+      const env = { ...process.env, CODEX_HOME: path.join(tmp, 'user', '.codex') }
+      // A listener home inside the work folder: an answer run's apply_patch reads its working root.
+      const boxed = path.join(tmp, 'box', 'agentchat-home')
+      fs.mkdirSync(boxed, { recursive: true })
+      fs.writeFileSync(path.join(boxed, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe', api_base: 'https://api.agentchat.test' }))
+      const holding = await listenerChecks(boxed, { ...base, preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'box') }, env)
+      expect(holding.find((c) => c.name === 'workdir')).toMatchObject({ verdict: 'WARN', detail: expect.stringContaining(`${path.join(tmp, 'box')} contains ${boxed}, where a key is`) })
+
+      signIn('https://api.agentchat.test')
+      const missing = path.join(tmp, 'not-yet')
+      const checks = await listenerChecks(home, { ...base, preset: 'codex', profile: 'answer', workdir: missing }, env)
+      expect(checks.find((c) => c.name === 'preset-preflight')).toMatchObject({ verdict: 'PASS' })
+      expect(checks.find((c) => c.name === 'workdir')).toMatchObject({ verdict: 'PASS', detail: missing })
+      // Without a runtime that checks out, nothing creates it: said, not failed — the listener creates it when it starts.
+      // No runtime at all: PATH is an empty folder, so no real codex can ever be reached from here.
+      const emptyBin = path.join(tmp, 'empty-bin')
+      fs.mkdirSync(emptyBin, { recursive: true })
+      process.env['PATH'] = emptyBin
+      const gone = await listenerChecks(home, { ...base, preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'later') }, { ...env, PATH: emptyBin })
+      process.env['PATH'] = originalPath
+      expect(gone.find((c) => c.name === 'preset')).toMatchObject({ verdict: 'FAIL', detail: expect.stringContaining('codex CLI not found on PATH') })
+      expect(gone.find((c) => c.name === 'workdir')).toMatchObject({ verdict: 'WARN', detail: expect.stringContaining('does not exist yet — the listener creates it') })
+    })
+
+    it('no identity: not checked (the listener idles); a home-folder work folder is said, with the answer runs’ own folder', async () => {
+      const fake = installFakeCodex(tmp)
+      process.env['PATH'] = `${fake.binDir}${path.delimiter}${originalPath ?? ''}`
+      const env = { ...process.env, CODEX_HOME: path.join(tmp, 'user', '.codex') }
+      expect(await preflight('codex', 'answer', env)).toMatchObject({ verdict: 'WARN', detail: expect.stringContaining('not checked: no identity') })
+      const checks = await listenerChecks(home, { ...base, preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'user') }, env)
+      expect(checks.find((c) => c.name === 'workdir')).toMatchObject({
+        verdict: 'WARN',
+        detail: expect.stringContaining(`is your home folder or contains it — answer runs work in ${path.join(tmp, 'user', '.codex', 'agentchat-answer-workdir')} instead`),
+      })
+    })
   })
 
   it('the manual lives in a skills dir under the home', () => {
@@ -313,6 +473,60 @@ describe('status --json', () => {
     retry_due_at: null,
     last_error: null,
     texts: null,
+  })
+
+  it('runs failing for a runtime reason, and another listener serving the agent, are said by status and doctor', { timeout: 30_000 }, async () => {
+    signIn('http://127.0.0.1:9') // unreachable on purpose: these lines come from the listener's own record
+    const since = new Date(Date.now() - 60_000).toISOString()
+    writeIntegrationStatus(home, { ...listenerRecord(), runtime: 'claude', runs_failing: { reason: 'claude: claude is not signed in (run `claude` once and sign in)', since, runs_missed: 2, checked_at: new Date().toISOString() } })
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).toContain('runs failing: claude: claude is not signed in')
+    out.length = 0
+    expect(await main(['--home', home, 'doctor'])).toBe(1)
+    expect(out.join('\n')).toContain('FAIL runs: runs failing: claude: claude is not signed in')
+
+    writeIntegrationStatus(home, { ...listenerRecord(), socket: 'idle', standby: { home: '/elsewhere/.claude/agentchat', pid: 4243, since } })
+    out.length = 0
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).toContain('standby: /elsewhere/.claude/agentchat (pid 4243) serves this agent')
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain('WARN single-listener: another listener serves this agent: /elsewhere/.claude/agentchat (pid 4243)')
+  })
+
+  it('a listener that gave the agent up — a refused key, or failing runs handed to a waiting listener — is said by doctor, with what clears it; a serving one too', { timeout: 30_000 }, async () => {
+    signIn('http://127.0.0.1:9')
+    const since = new Date(Date.now() - 120_000).toISOString()
+    const retryAt = new Date(Date.now() + 60_000).toISOString()
+    writeIntegrationStatus(home, { ...listenerRecord(), socket: 'idle', unservable: { reason: 'key_refused', detail: 'auth rejected (close 1008 Invalid token)', since, retry_at: retryAt } })
+    expect(await main(['--home', home, 'doctor'])).toBe(1)
+    expect(out.join('\n')).toContain('FAIL listener-serving: this home gave the agent up: the server refuses its key (auth rejected (close 1008 Invalid token)); signing in again here')
+    out.length = 0
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).toContain("gave up: the server refuses this home's key")
+
+    const reason = 'claude: claude is not signed in'
+    writeIntegrationStatus(home, {
+      ...listenerRecord(),
+      socket: 'idle',
+      runs_failing: { reason, since, runs_missed: 4, checked_at: new Date().toISOString() },
+      unservable: { reason: 'runs_failing', detail: `runs failing: ${reason}`, since, retry_at: retryAt },
+    })
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain(`FAIL listener-serving: this home gave the agent up to another listener that was waiting: runs failing: ${reason} (since ${since}); a runtime check that passes clears this`)
+
+    // A lone listener keeps serving while runs fail; lock renewal errors are said.
+    writeIntegrationStatus(home, { ...listenerRecord(), runs_failing: { reason, since, runs_missed: 4, checked_at: new Date().toISOString() }, lease_errors: { count: 3, last: 'ENOENT: the lock folder is gone' } })
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain(`WARN listener-serving: socket ready, but runs are failing: ${reason}`)
+    expect(out.join('\n')).toContain('WARN locks: 3 lock renewal(s) failed (last: ENOENT: the lock folder is gone)')
+
+    writeIntegrationStatus(home, listenerRecord())
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain('PASS listener-serving: serving @probe (socket ready, 1 run(s), 1 ok)')
   })
 
   it('no identity: `integration`, and no `doorbell` key', async () => {
@@ -432,6 +646,7 @@ describe('listen --uninstall removes what only the service used', () => {
     expect(await runListen(home, 'forward', { to: 'http://localhost:7/w', install: true }, ioq)).toBe(0)
     fs.mkdirSync(path.join(home, 'presets'), { recursive: true })
     fs.writeFileSync(claudeMcpConfigPath(home), '{"key":"held"}')
+    fs.writeFileSync(path.join(home, 'presets', 'claude-code.mcp.run-1.identity.md'), 'left by a run cut off\n')
     fs.writeFileSync(path.join(home, 'integration.status.json'), '{}')
     expect(fs.existsSync(path.join(home, 'forward.secret'))).toBe(true)
     expect(await runListen(home, 'listen', { uninstall: true }, ioq)).toBe(0)

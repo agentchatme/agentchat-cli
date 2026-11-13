@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import { VERSION } from './version.js'
+import { PEER_RUN_WARNING } from '@agentchatme/agent-core'
 import { presetNames } from '@agentchatme/agent-core/presets'
 import { invocation, resolveHome } from './home.js'
 import { cliIdentityCommands } from './identity.js'
@@ -32,6 +33,11 @@ Account (identity in --home, else $AGENTCHAT_HOME, else ~/.agentchat):
 Be woken (one run at a time; the served wake instruction on stdin):
   ${cli} listen --run "<command>" [--workdir <dir>] [--budget <s>] [--with-key] [--install]
   ${cli} listen --preset <${presets}> [--profile answer|work|full] [--workdir <dir>] [--install]
+                                               answer (default): the AgentChat tools and reads inside the run's
+                                               work folder only — no web, no shell, no other MCP server;
+                                               work and full: ${PEER_RUN_WARNING}.
+                                               The work folder: <home>-workdir, a folder of its own (--workdir
+                                               names another; --run keeps the directory listen ran in)
   ${cli} listen --install                       re-install the saved listener
   ${cli} listen --uninstall                     remove the background service
   ${cli} forward --to http://localhost:<port>/<path> [--install]

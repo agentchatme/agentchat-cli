@@ -8,9 +8,11 @@ import { runListen } from '../src/listen.js'
 import { writeListenerConfig } from '../src/listener/config.js'
 import { runWatch, describeFrame } from '../src/watch.js'
 import { readIntegrationStatus } from '@agentchatme/agent-core'
-import { claudeMcpConfigPath } from '@agentchatme/agent-core/presets'
+import { claudeMcpConfigPath, claudeProjectsDirFor, codexRunArgs, readDenyRules } from '@agentchatme/agent-core/presets'
+import { defaultPresetWorkdir } from '../src/listener/config.js'
+import { claudePresetDenyPaths } from '../src/identity.js'
 import { VERSION } from '../src/version.js'
-import { installFakeClaude, readFakeRuns } from './helpers/fake-runtimes.js'
+import { installFakeClaude, installFakeCodex, readFakeMcpLists, readFakeRuns } from './helpers/fake-runtimes.js'
 import { startServerDouble, until, pause, type ServerDouble } from './helpers/server-double.js'
 
 // ─── A foreground listener, end to end, against the server double ───────────
@@ -184,10 +186,49 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     const mcp = JSON.parse(fs.readFileSync(claudeMcpConfigPath(home), 'utf-8')) as { mcpServers: Record<string, { headers: Record<string, string> }> }
     expect(mcp.mcpServers['agentchat']?.headers).toMatchObject({ 'X-AgentChat-Client': 'claude-code', 'X-AgentChat-Client-Version': VERSION })
     expect(run?.stdin).toContain('SERVED WAKE INSTRUCTION for claude-code')
-    // The run cannot read the home, so it is pointed at the address.
-    expect(run?.stdin).toContain('https://agentchat.me/skill.md')
+    // An answer run (the default) reaches neither the manual's file nor the web: no pointer to either.
+    expect(run?.stdin).not.toContain('agentchat.me/skill.md')
+    expect(run?.stdin).not.toContain('The AgentChat manual')
+    // Its only MCP server is the listener's own tool config; who it is comes from the served texts (no CLAUDE.md in an answer run).
+    expect(run?.argv.slice(run.argv.indexOf('--mcp-config'), run.argv.indexOf('--mcp-config') + 3)).toEqual(['--mcp-config', claudeMcpConfigPath(home), '--strict-mcp-config'])
+    expect(run?.mcpConfig).toMatchObject({ servers: ['agentchat'] })
+    expect(run?.appendedSystemPrompt).toContain('Served identity line for claude-code')
+    expect(run?.env['CLAUDE_CODE_DISABLE_CLAUDE_MDS']).toBe('1')
+    // The work folder is the preset's own, beside the home — not the directory listen ran in.
+    expect(fs.realpathSync(run!.cwd)).toBe(fs.realpathSync(defaultPresetWorkdir(home)))
+    expect(fs.readdirSync(path.join(home, 'presets')).filter((n) => n.endsWith('.identity.md'))).toEqual([]) // the run's own file is gone with it
+    // The deny list doctor builds its stand-in runner with is the one the listener's real run carried (no drift).
+    if (process.platform !== 'win32') {
+      const configDir = path.resolve(tmp, '.claude')
+      expect(run?.argv.at(-1)).toBe(['WebFetch', 'WebSearch', 'Bash', ...readDenyRules([...claudePresetDenyPaths(home, configDir), claudeProjectsDirFor(configDir)])].join(','))
+    }
     expect(JSON.stringify(run)).not.toContain(KEY)
     expect(server.requests.some((r) => r.startsWith('/v1/texts?runtime=claude-code'))).toBe(true)
+  }, 40_000)
+})
+
+describe('agentchat listen --preset codex, end to end (fake codex)', () => {
+  it('an answer run: Codex’s MCP servers listed first, every other one switched off, the answer flags, the key in its environment only', async () => {
+    const fake = installFakeCodex(tmp)
+    const lists = path.join(tmp, 'mcp-lists.jsonl')
+    const listed = JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'github', enabled: true }])
+    const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST: listed, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex') }
+    process.env['PATH'] = env.PATH
+    const controller = new AbortController()
+    const done = runListen(home, 'listen', { preset: 'codex' }, io(controller.signal, env))
+    await until(() => readFakeRuns(fake).length > 0, 20_000)
+    controller.abort()
+    expect(await done).toBe(0)
+    const [run] = readFakeRuns(fake)
+    const workdir = defaultPresetWorkdir(home)
+    expect(readFakeMcpLists(lists).length).toBeGreaterThan(0)
+    expect(readFakeMcpLists(lists)[0]?.argv.slice(0, 3)).toEqual(['mcp', 'list', '--json'])
+    const answer = codexRunArgs('answer', { workdir, mcp: { url: `${server.apiBase}/mcp`, keyEnv: 'AGENTCHAT_LISTENER_API_KEY', clientVersion: VERSION } })
+    expect(run?.argv).toEqual([...answer.slice(0, -1), '-c', 'mcp_servers.github.enabled=false', '-'])
+    expect(run?.stdin).toContain('SERVED WAKE INSTRUCTION for codex')
+    expect(run?.stdin).not.toContain('The AgentChat manual')
+    expect(run?.env['AGENTCHAT_LISTENER_API_KEY']).toBe(KEY)
+    expect(run?.argv.join(' ')).not.toContain(KEY)
   }, 40_000)
 })
 

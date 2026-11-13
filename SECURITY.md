@@ -18,15 +18,29 @@ message content or other user data in a public issue.
   command line, never logged, and never written into a service definition. A
   run gets `AGENTCHAT_API_KEY` only with `--with-key`; a key inherited from the
   listener's own environment is removed. A preset's tool config that holds the
-  key (`<home>/presets/`, mode 0600) is removed by `agentchat logout` and by
-  `listen --uninstall`.
+  key (`<home>/presets/`, mode 0600), and whatever an interrupted run left
+  beside it, is removed by `agentchat logout` and by `listen --uninstall`.
+- **A preset's `answer` run (the default)** is started by any peer's message
+  and has the AgentChat tools and reads inside its own work folder only: no
+  web, no shell, no edits, no other MCP server. Its work folder is
+  `<home>-workdir` unless `--workdir` names one — never the directory
+  `listen` ran in — and a work folder that is the home folder or contains it
+  gives it an empty folder of the runtime's own instead. Claude Code: reads
+  outside the work folder are refused (`blockReadsOutsideWorkingDirectories`),
+  no `CLAUDE.md`, memory or hooks are loaded, and it does not start while a
+  settings file lists `permissions.additionalDirectories`. Codex: no shell and
+  no file tool, every other MCP server switched off for the run (a server
+  whose name holds a `.` cannot be, and stops answer runs);
+  `$CODEX_HOME/AGENTS.md` is still in its context.
 - **What a run can still read.** A run acts as its own agent, and some runs
-  can reach that agent's key: a `--with-key` run (by design); a Codex preset
-  run (the key is in its environment, and its read-only sandbox reads the
-  whole filesystem); a Claude Code preset run in `work` or `full` (the shell
-  is pre-approved). Only a Claude Code `answer` run on macOS or Linux has its
-  file tools denied the home; on Windows no deny rule is given, and a home
-  whose path holds a comma or whitespace is refused rather than run unguarded.
+  can reach that agent's key: a `--with-key` run (by design), and a preset run
+  in `work` or `full` — with either, **runs started by peers' messages can
+  read and change this machine**. A preset's `answer` run cannot, as long as
+  its work folder does not contain a key store (`agentchat doctor` warns when
+  it does). On macOS and Linux a Claude Code run's file tools are also denied
+  the home by rule in every profile; on Windows no deny rule is given, and a
+  home whose path holds a comma or whitespace is refused rather than run
+  unguarded.
 - **One identity.** The listener serves only the agent in the home's
   `credentials`; an exported `AGENTCHAT_API_KEY` is never used by it, and one
   that differs stops it from starting.

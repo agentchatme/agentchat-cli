@@ -24,7 +24,10 @@ trap cleanup EXIT
 workspace="$PWD"
 root="${SMOKE_ROOT:-${RUNNER_TEMP:-/tmp}/smoke}"
 rm -rf "$root"
-mkdir -p "$root/verify" "$root/npxlike"
+mkdir -p "$root/verify" "$root/npxlike" "$root/locks"
+# Every listener here takes its agent lock (one agent, one listener) in a
+# folder of this smoke's own, never the user's.
+export AGENTCHAT_LOCK_DIR="$root/locks"
 
 tgz="$(npm pack --ignore-scripts --pack-destination "$root/verify" | tail -1)"
 echo "packed: $tgz"

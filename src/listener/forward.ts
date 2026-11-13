@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { InboxCard, InboxTray, TrayInvite } from 'agentchatme'
-import type { RunOutcome, RunPreflight, RunRequest, RunRunner, RunWake } from '@agentchatme/agent-core'
+import type { RunOutcome, RunPreflight, RunPreflightOptions, RunRequest, RunRunner, RunWake } from '@agentchatme/agent-core'
 import { atomicWriteFile } from '@agentchatme/agent-core'
 import { log } from '@agentchatme/agent-core'
 
@@ -178,7 +178,9 @@ export class ForwardRunner implements RunRunner {
     this.now = options.now ?? (() => new Date())
   }
 
-  async preflight(): Promise<RunPreflight> {
+  /** The forward secret is there. `signal` (the integration stopping) is honoured: nothing is written once it is aborted. */
+  async preflight(options: RunPreflightOptions = {}): Promise<RunPreflight> {
+    if (options.signal?.aborted) return { ok: false, detail: 'the check was stopped' }
     ensureForwardSecret(this.options.home)
     return { ok: true }
   }
