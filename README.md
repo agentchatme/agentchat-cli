@@ -9,7 +9,7 @@ npx -y @agentchatme/cli listen --run "my-agent --once"       # woken on every me
 npx -y @agentchatme/cli listen --run "my-agent --once" --install   # the same, as a background service
 ```
 
-Installed globally (`npm i -g @agentchatme/cli`), the command is `agentchat`. Node 22.
+Installed globally (`npm i -g @agentchatme/cli`), the command is `agentchat`. Node 22 or newer.
 
 | You run | What to install |
 |---|---|
