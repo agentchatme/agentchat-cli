@@ -7,13 +7,17 @@ import { spawn } from 'node:child_process'
 import { runListen } from '../src/listen.js'
 import { writeListenerConfig } from '../src/listener/config.js'
 import { runWatch, describeFrame } from '../src/watch.js'
-import { readIntegrationStatus } from '@agentchatme/agent-core'
+import { MANUAL_URL, readIntegrationStatus, RUN_PROFILES } from '@agentchatme/agent-core'
+import * as presets from '@agentchatme/agent-core/presets'
 import { claudeMcpConfigPath, claudeProjectsDirFor, codexRunArgs, readDenyRules } from '@agentchatme/agent-core/presets'
 import { defaultPresetWorkdir } from '../src/listener/config.js'
 import { claudePresetDenyPaths } from '../src/identity.js'
 import { VERSION } from '../src/version.js'
 import { installFakeClaude, installFakeCodex, readFakeMcpLists, readFakeRuns } from './helpers/fake-runtimes.js'
 import { startServerDouble, until, pause, type ServerDouble } from './helpers/server-double.js'
+
+/** Whether the engine this build runs on has the `own` profile (the pin moves to it at the release step). */
+const ENGINE_HAS_OWN = (RUN_PROFILES as readonly string[]).includes('own')
 
 // ─── A foreground listener, end to end, against the server double ───────────
 //
@@ -176,7 +180,7 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude') }
     process.env['PATH'] = env.PATH
     const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'claude-code' }, io(controller.signal, env))
+    const done = runListen(home, 'listen', { preset: 'claude-code', profile: 'answer' }, io(controller.signal, env))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -205,6 +209,31 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     expect(JSON.stringify(run)).not.toContain(KEY)
     expect(server.requests.some((r) => r.startsWith('/v1/texts?runtime=claude-code'))).toBe(true)
   }, 40_000)
+
+  it.skipIf(!ENGINE_HAS_OWN)('own (the default): the listener\'s own tool config without --strict-mcp-config, the identity line appended, the user\'s context and settings left alone, the key store denied', async () => {
+    const fake = installFakeClaude(tmp)
+    const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude'), AGENTCHAT_RUN_PROFILE: '' }
+    process.env['PATH'] = env.PATH
+    const controller = new AbortController()
+    const done = runListen(home, 'listen', { preset: 'claude-code' }, io(controller.signal, env))
+    await until(() => readFakeRuns(fake).length > 0, 20_000)
+    controller.abort()
+    expect(await done).toBe(0)
+    const [run] = readFakeRuns(fake)
+    const argv = run!.argv
+    expect(argv[argv.indexOf('--mcp-config') + 1]).toBe(claudeMcpConfigPath(home))
+    for (const flag of ['--strict-mcp-config', '--tools', '--settings', '--permission-mode']) expect(argv).not.toContain(flag)
+    expect(argv[argv.indexOf('--allowedTools') + 1]).toBe('mcp__agentchat__*')
+    expect(run?.appendedSystemPrompt).toContain('Served identity line for claude-code')
+    expect(run?.env['CLAUDE_CODE_DISABLE_CLAUDE_MDS']).toBeUndefined()
+    // Its prompt says where the manual is, as it can reach it: the address (the home is denied to it).
+    expect(run?.stdin).toContain(MANUAL_URL)
+    if (process.platform !== 'win32') {
+      const configDir = path.resolve(tmp, '.claude')
+      expect(argv.at(-1)).toBe(readDenyRules(claudePresetDenyPaths(home, configDir)).join(','))
+    }
+    expect(JSON.stringify(run)).not.toContain(KEY)
+  }, 40_000)
 })
 
 describe('agentchat listen --preset codex, end to end (fake codex)', () => {
@@ -215,7 +244,7 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST: listed, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex') }
     process.env['PATH'] = env.PATH
     const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'codex' }, io(controller.signal, env))
+    const done = runListen(home, 'listen', { preset: 'codex', profile: 'answer' }, io(controller.signal, env))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -229,6 +258,29 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     expect(run?.stdin).not.toContain('The AgentChat manual')
     expect(run?.env['AGENTCHAT_LISTENER_API_KEY']).toBe(KEY)
     expect(run?.argv.join(' ')).not.toContain(KEY)
+  }, 40_000)
+
+  it.skipIf(!ENGINE_HAS_OWN)('own (the default): no listing, the user\'s config left alone, the key from a headers helper in the home — none in the run\'s environment', async () => {
+    const fake = installFakeCodex(tmp)
+    const lists = path.join(tmp, 'own-mcp-lists.jsonl')
+    const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex'), AGENTCHAT_RUN_PROFILE: '' }
+    process.env['PATH'] = env.PATH
+    const controller = new AbortController()
+    const done = runListen(home, 'listen', { preset: 'codex' }, io(controller.signal, env))
+    await until(() => readFakeRuns(fake).length > 0, 20_000)
+    controller.abort()
+    expect(await done).toBe(0)
+    const [run] = readFakeRuns(fake)
+    expect(readFakeMcpLists(lists)).toEqual([])
+    const helperPath = (presets as unknown as { codexListenerHeadersHelperPath: (home: string) => string }).codexListenerHeadersHelperPath(home)
+    const helper = (presets as unknown as { codexHeadersHelperCommand: (script: string) => string }).codexHeadersHelperCommand(helperPath)
+    const own = codexRunArgs('own' as never, { workdir: defaultPresetWorkdir(home), mcp: { url: `${server.apiBase}/mcp`, keyEnv: 'AGENTCHAT_LISTENER_API_KEY', headersHelper: helper, clientVersion: VERSION } as never })
+    expect(run?.argv).toEqual(own)
+    expect(fs.existsSync(helperPath)).toBe(true)
+    expect(run?.env['AGENTCHAT_LISTENER_API_KEY']).toBeUndefined()
+    expect(JSON.stringify(run)).not.toContain(KEY)
+    // Its prompt says where the manual is: Codex's sandboxes read the file.
+    expect(run?.stdin).toContain('The AgentChat manual')
   }, 40_000)
 })
 

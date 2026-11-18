@@ -11,14 +11,22 @@ import { terminalSafe } from '../src/terminal.js'
 import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceEnvFrom, serviceLabelForHome, shellArg } from '../src/home.js'
 import { claudePresetDenyPaths, homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
-import { defaultPresetWorkdir, describeListenerConfig, listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
+import { OWN_PROFILE_WARNING, defaultPresetWorkdir, describeListenerConfig, listenerConfigPath, ownProfileLine, presetProfileSummary, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
 import { presetPointer } from '../src/runners.js'
 import * as core from '@agentchatme/agent-core'
-import { alwaysOnWanted, manualPointer, MANUAL_URL, PEER_RUN_WARNING, writeIntegrationStatus, type IntegrationStatus } from '@agentchatme/agent-core'
+import { alwaysOnWanted, manualPointer, MANUAL_URL, PEER_RUN_WARNING, RUN_PROFILES, writeIntegrationStatus, type IntegrationStatus, type RunProfile } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath, claudeCodePreset, codexPreset } from '@agentchatme/agent-core/presets'
 import { installFakeClaude, installFakeCodex } from './helpers/fake-runtimes.js'
 import { INBOX_TOOL, SEND_TOOL, startMcpDouble, type McpDouble } from './helpers/mcp-double.js'
+
+/**
+ * Whether the engine this build runs on has the `own` profile. The pin moves to
+ * that engine at the release step; until then the tests that need it skip,
+ * and pass with the new engine linked in.
+ */
+const ENGINE_HAS_OWN = (RUN_PROFILES as readonly string[]).includes('own')
+const OWN = 'own' as RunProfile
 
 // ─── The `agentchat` CLI: its arguments, the tools through it, install ──────
 
@@ -94,7 +102,7 @@ describe('arguments', () => {
     expect(refused(configFromFlags('listen', { run: 'a', budget: '0' }, io))).toMatch(/seconds/)
     expect(refused(configFromFlags('forward', { to: 'http://example.com/x' }, io))).toMatch(/only to this machine/)
     expect(refused(configFromFlags('listen', { preset: 'codex', profile: 'all' }, io))).toBe(
-      `--profile is answer, work or full (answer, the default: the AgentChat tools and reads inside the run's work folder only; work and full: ${PEER_RUN_WARNING})`,
+      `--profile is own, answer, work or full (own, the default: reply runs use your own Claude Code or Codex permission settings, with anything that would ask refused; answer: the AgentChat tools and reads inside the run's work folder only; work and full: ${PEER_RUN_WARNING})`,
     )
     expect(refused(configFromFlags('forward', {}, io))).toMatch(/Missing --to/)
   })
@@ -334,10 +342,41 @@ describe('a preset run’s prompt and the profile words', () => {
     }
   })
 
-  it('a preset listener’s description names the engine’s warning next to work and full', () => {
+  it('a preset listener’s description says what its profile does: own in one line with the honest sentence, the engine’s warning next to work and full', () => {
     const base = { version: 1 as const, updated_at: 'x', mode: 'preset' as const, preset: 'codex', workdir: '/w' }
-    expect(describeListenerConfig({ ...base, profile: 'answer' })).toBe('runs the codex preset (profile answer) in /w')
+    expect(describeListenerConfig({ ...base, profile: 'answer' })).toBe("runs the codex preset (profile answer — the AgentChat tools and reads inside the run's work folder only) in /w")
     expect(describeListenerConfig({ ...base, profile: 'full' })).toBe(`runs the codex preset (profile full — ${PEER_RUN_WARNING}) in /w`)
+    expect(describeListenerConfig({ ...base, preset: 'claude-code', profile: OWN })).toBe(
+      "runs the claude-code preset (profile own — reply runs use your own Claude Code permission settings, with anything that would ask refused; runs started by peers' messages act with those permissions) in /w",
+    )
+    expect(presetProfileSummary('own', 'Codex')).toBe(`${ownProfileLine('Codex')}; ${OWN_PROFILE_WARNING}`)
+  })
+
+  it('an own run’s prompt ends with where the manual is, as the run can reach it (the address for Claude Code, denied the home; the file for Codex)', () => {
+    const file = manualPathFor(home)
+    expect(presetPointer(claudeCodePreset, OWN, file)).toBe(`(The AgentChat manual is at ${MANUAL_URL}.)`)
+    expect(presetPointer(codexPreset, OWN, file)).toBe(manualPointer(`at ${file}`))
+  })
+
+  it.skipIf(!ENGINE_HAS_OWN)('the own words are the engine’s', () => {
+    const words = core as unknown as { ownProfileLine: (label: string) => string; OWN_RUN_WARNING: string }
+    for (const label of ['Claude Code', 'Codex']) expect(ownProfileLine(label)).toBe(words.ownProfileLine(label))
+    expect(OWN_PROFILE_WARNING).toBe(words.OWN_RUN_WARNING)
+  })
+})
+
+describe.skipIf(!ENGINE_HAS_OWN)('own: a preset listener acts as the agent itself, under the runtime’s own settings', () => {
+  it('the default for --preset when neither --profile nor AGENTCHAT_RUN_PROFILE says otherwise; --profile own is accepted; an unknown value in the environment is answer', () => {
+    const io = { env: {}, cwd: tmp, home }
+    expect(configFromFlags('listen', { preset: 'claude-code' }, io)).toMatchObject({ ok: true, config: { profile: 'own' } })
+    expect(configFromFlags('listen', { preset: 'codex', profile: 'own' }, io)).toMatchObject({ ok: true, config: { profile: 'own' } })
+    expect(configFromFlags('listen', { preset: 'codex' }, { ...io, env: { AGENTCHAT_RUN_PROFILE: 'yolo' } })).toMatchObject({ ok: true, config: { profile: 'answer' } })
+  })
+
+  it('an installed listener keeps the profile its listener.json recorded; a re-install with --preset and no --profile takes the default', async () => {
+    writeListenerConfig(home, { version: 1, mode: 'preset', preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'w'), updated_at: 'x' })
+    expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { profile: 'answer' } })
+    expect(configFromFlags('listen', { preset: 'codex' }, { env: {}, cwd: tmp, home, saved: (readListenerConfig(home) as { config: never }).config })).toMatchObject({ ok: true, config: { profile: 'own' } })
   })
 })
 
@@ -513,6 +552,17 @@ describe('logout and doctor', () => {
       process.env['PATH'] = originalPath
       expect(gone.find((c) => c.name === 'preset')).toMatchObject({ verdict: 'FAIL', detail: expect.stringContaining('codex CLI not found on PATH') })
       expect(gone.find((c) => c.name === 'workdir')).toMatchObject({ verdict: 'WARN', detail: expect.stringContaining('does not exist yet — the listener creates it') })
+    })
+
+    it.skipIf(!ENGINE_HAS_OWN)('a home-folder work folder: own runs work in the same folder of their own', async () => {
+      const fake = installFakeCodex(tmp)
+      process.env['PATH'] = `${fake.binDir}${path.delimiter}${originalPath ?? ''}`
+      const env = { ...process.env, CODEX_HOME: path.join(tmp, 'user', '.codex') }
+      const checks = await listenerChecks(home, { ...base, preset: 'codex', profile: OWN, workdir: path.join(tmp, 'user') }, env)
+      expect(checks.find((c) => c.name === 'workdir')).toMatchObject({
+        verdict: 'WARN',
+        detail: expect.stringContaining(`is your home folder or contains it — own runs work in ${path.join(tmp, 'user', '.codex', 'agentchat-answer-workdir')} instead`),
+      })
     })
 
     it('no identity: not checked (the listener idles); a home-folder work folder is said, with the answer runs’ own folder', async () => {

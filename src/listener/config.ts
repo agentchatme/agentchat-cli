@@ -1,6 +1,7 @@
 import * as path from 'node:path'
 import { z } from 'zod'
-import { RUN_PROFILES, runProfileWarning } from '@agentchatme/agent-core'
+import { PEER_RUN_WARNING, RUN_PROFILES } from '@agentchatme/agent-core'
+import { presetNamed } from '@agentchatme/agent-core/presets'
 import { atomicWriteFile, readJsonFile } from '@agentchatme/agent-core'
 
 // ─── What the installed listener runs ───────────────────────────────────────
@@ -14,10 +15,14 @@ import { atomicWriteFile, readJsonFile } from '@agentchatme/agent-core'
 //
 //   run      the owner's command line, through the shell, prompt on stdin
 //   preset   a known coding agent's headless mode (`--preset <name>`) with a
-//            run profile, acting as this home's agent: `answer` (the default)
-//            gives a run the AgentChat tools and reads inside its work folder
-//            only; with `work` or `full`, runs started by peers' messages can
-//            read and change this machine
+//            run profile, acting as this home's agent: `own` (the default:
+//            the coding agent's own permission settings, with anything that
+//            would ask refused); `answer` gives a run the AgentChat tools and
+//            reads inside its work folder only; with `work` or `full`, runs
+//            started by peers' messages can read and change this machine. The
+//            profile is recorded here at install, so an installed listener
+//            keeps it until it is installed again (a file without one, which
+//            this CLI never writes, is read as `answer`)
 //   forward  each wake POSTed to the owner's endpoint (the `agentchat` dialect)
 
 export const LISTENER_CONFIG_FILE = 'listener.json'
@@ -88,14 +93,39 @@ export function writeListenerConfig(home: string, config: ListenerConfigInput): 
   return parsed
 }
 
+/**
+ * What `own` does, in one line, for a preset's runtime (`Claude Code`,
+ * `Codex`): the engine's `ownProfileLine(label)` (tests/cli.test.ts holds the
+ * two equal once the engine has it).
+ */
+export function ownProfileLine(label: string): string {
+  return `reply runs use your own ${label} permission settings, with anything that would ask refused`
+}
+
+/** The honest sentence after it: the engine's `OWN_RUN_WARNING` (held equal the same way). */
+export const OWN_PROFILE_WARNING = "runs started by peers' messages act with those permissions"
+
+/** What a preset run of `profile` may do, in one line (`label`: the preset's runtime). A value that is not a profile reads as `answer`. */
+export function presetProfileSummary(profile: string, label: string): string {
+  switch (profile) {
+    case 'own':
+      return `${ownProfileLine(label)}; ${OWN_PROFILE_WARNING}`
+    case 'work':
+    case 'full':
+      return PEER_RUN_WARNING
+    default:
+      return "the AgentChat tools and reads inside the run's work folder only"
+  }
+}
+
 /** One line for `status`: what the listener runs. Never the key; the command as the owner wrote it. */
 export function describeListenerConfig(config: ListenerConfig): string {
   switch (config.mode) {
     case 'run':
       return `runs \`${config.command}\` in ${config.workdir}${config.with_key ? ' (key in its environment)' : ''}`
     case 'preset': {
-      const warning = runProfileWarning(config.profile)
-      return `runs the ${config.preset} preset (profile ${config.profile}${warning !== null ? ` — ${warning}` : ''}) in ${config.workdir}`
+      const label = presetNamed(config.preset)?.label ?? config.preset
+      return `runs the ${config.preset} preset (profile ${config.profile} — ${presetProfileSummary(config.profile, label)}) in ${config.workdir}`
     }
     case 'forward':
       return `forwards each wake to ${config.url}`

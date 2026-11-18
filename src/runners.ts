@@ -35,9 +35,9 @@ export interface PlanOptions {
  * can reach it. An `answer` run reaches neither the file (outside its work
  * folder; a Codex answer run has no file tool at all) nor the web, so its
  * prompt ends with the served instruction alone: the hosted tools and the
- * served texts are everything it has. A `work` or `full` run that cannot read
- * the identity home (Claude Code: it is denied) is pointed at the address; one
- * that can, at the file.
+ * served texts are everything it has. An `own`, `work` or `full` run that
+ * cannot read the identity home (Claude Code: it is denied) is pointed at the
+ * address; one that can (Codex), at the file.
  */
 export function presetPointer(preset: Pick<Preset, 'readsIdentityHome'>, profile: RunProfile, manualPath: string): string {
   if (profile === 'answer') return ''
