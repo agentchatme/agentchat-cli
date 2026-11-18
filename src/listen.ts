@@ -5,7 +5,7 @@ import { defaultPresetWorkdir, describeListenerConfig, ListenerConfigSchema, rea
 import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, PEER_RUN_WARNING, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
-import { invocation, offByLegacySwitch } from './home.js'
+import { invocationFor, offByLegacySwitch } from './home.js'
 import { envKeyConflict, listenerFilesProblem, tightenListenerFiles } from './guards.js'
 import { planListener, type PlanOptions } from './runners.js'
 import { installListenerService, listenerServiceStatus, uninstallListenerService } from './service.js'
@@ -119,7 +119,7 @@ export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, 
 
   if (mode === 'forward') {
     if (flags.run !== undefined || flags.preset !== undefined) return { ok: false, error: '`forward` takes --to only; `listen` runs a command' }
-    if (flags.to === undefined) return { ok: false, error: `Missing --to. Usage: ${invocation(io.env)} forward --to http://localhost:<port>/<path>` }
+    if (flags.to === undefined) return { ok: false, error: `Missing --to. Usage: ${invocationFor(io.home, io.env)} forward --to http://localhost:<port>/<path>` }
     const problem = forwardUrlProblem(flags.to)
     if (problem !== null) return { ok: false, error: problem }
     return { ok: true, config: { ...common, mode: 'forward', url: flags.to } }
@@ -141,13 +141,13 @@ export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, 
     const profile = flags.profile !== undefined && isRunProfile(flags.profile) ? flags.profile : resolveRunProfile(io.env)
     return { ok: true, config: { ...common, mode: 'preset', preset: flags.preset, profile }, ...note }
   }
-  return { ok: false, error: `Missing what to run. Usage: ${invocation(io.env)} listen --run "<command>"  or  ${invocation(io.env)} listen --preset <${presetNames().join('|')}>` }
+  return { ok: false, error: `Missing what to run. Usage: ${invocationFor(io.home, io.env)} listen --run "<command>"  or  ${invocationFor(io.home, io.env)} listen --preset <${presetNames().join('|')}>` }
 }
 
 export async function runListen(home: string, mode: 'listen' | 'forward', flags: ListenFlags, io: ListenIo): Promise<number> {
   const env = io.env ?? process.env
   const cwd = io.cwd ?? process.cwd()
-  const cli = invocation(env)
+  const cli = invocationFor(home, env)
 
   if (flags.uninstall === true) {
     try {

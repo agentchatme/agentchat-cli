@@ -1,7 +1,7 @@
 import { RealtimeClient, integration as kit, type ServerEvent, type WsMessage } from 'agentchatme'
 import { clientIdentityOf, normalizeHandle, resolveIdentity, type SocketState } from '@agentchatme/agent-core'
 import { socketStateOf, wsBaseFor } from '@agentchatme/agent-core/daemon'
-import { cliClient, invocation } from './home.js'
+import { cliClient, invocationFor } from './home.js'
 import { terminalSafe } from './terminal.js'
 import { envKeyConflict } from './guards.js'
 
@@ -110,7 +110,7 @@ export async function runWatch(home: string, opts: { json?: boolean; seconds?: s
   }
   const identity = resolveIdentity(home, { envKey: false })
   if (identity === null) {
-    io.err(`No AgentChat identity in ${home}. Set one up first: ${invocation(io.env)} register`)
+    io.err(`No AgentChat identity in ${home}. Set one up first: ${invocationFor(home, io.env)} register`)
     return 1
   }
   const self = normalizeHandle(identity.handle ?? '')

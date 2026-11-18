@@ -1,5 +1,6 @@
 import { McpHttpClient, McpError, type McpTool, type McpToolResult } from './mcp-client.js'
 import { DEFAULT_API_BASE, resolveIdentity } from '@agentchatme/agent-core'
+import { envKeyConflict } from './guards.js'
 import { cliClient } from './home.js'
 import { terminalSafe } from './terminal.js'
 
@@ -14,6 +15,11 @@ import { terminalSafe } from './terminal.js'
 // server's schema lists them, and `inbox` is `agentchat_inbox` looking once
 // (its `timeout_seconds` default is a held call, which suits a model, not a
 // shell). Everything printed from a response is made terminal-safe first.
+//
+// They act as the home's agent only, as the listener does: an exported
+// `AGENTCHAT_API_KEY` that is not the home's key stops them before anything
+// reaches the server (`envKeyConflict`), and the key is always the one in
+// `credentials`.
 
 export interface ToolsIo {
   readonly out: (line: string) => void
@@ -24,8 +30,21 @@ export interface ToolsIo {
   readonly fetch?: typeof fetch
 }
 
+/** The home's identity: its `credentials` only, never an exported key. */
+function homeIdentity(home: string): ReturnType<typeof resolveIdentity> {
+  return resolveIdentity(home, { envKey: false })
+}
+
+/** The one-line refusal when the environment names another agent than the home (printed, exit 1); null to go on. */
+function refused(home: string, io: ToolsIo): number | null {
+  const conflict = envKeyConflict(home, io.env ?? process.env)
+  if (conflict === null) return null
+  io.err(conflict)
+  return 1
+}
+
 function clientFor(home: string, io: ToolsIo): McpHttpClient {
-  const identity = resolveIdentity(home)
+  const identity = homeIdentity(home)
   const env = io.env ?? process.env
   return new McpHttpClient({
     apiBase: identity?.apiBase ?? env['AGENTCHAT_API_BASE']?.trim() ?? DEFAULT_API_BASE,
@@ -58,6 +77,8 @@ export function renderResult(result: McpToolResult): string {
 }
 
 export async function runToolsList(home: string, opts: { json?: boolean }, io: ToolsIo): Promise<number> {
+  const refusal = refused(home, io)
+  if (refusal !== null) return refusal
   try {
     const tools = await clientFor(home, io).listTools()
     if (opts.json === true) {
@@ -66,7 +87,7 @@ export async function runToolsList(home: string, opts: { json?: boolean }, io: T
     }
     const width = Math.min(36, Math.max(0, ...tools.map((t) => t.name.length)))
     for (const tool of tools) io.out(`${terminalSafe(tool.name).padEnd(width)}  ${summaryOf(tool)}`)
-    if (resolveIdentity(home) === null) io.err('(signed out: the server shows only the sign-up tools)')
+    if (homeIdentity(home) === null) io.err('(signed out: the server shows only the sign-up tools)')
     return 0
   } catch (err) {
     return failure(io, err)
@@ -96,6 +117,8 @@ async function call(home: string, tool: string, args: Record<string, unknown>, o
 }
 
 export async function runToolsCall(home: string, tool: string | undefined, opts: { json?: string; raw?: boolean }, io: ToolsIo): Promise<number> {
+  const refusal = refused(home, io)
+  if (refusal !== null) return refusal
   if (tool === undefined || tool.length === 0) {
     io.err('Usage: agentchat tools call <tool> [--json \'{"key":"value"}\' | --json -] [--raw]')
     return 1
@@ -124,6 +147,8 @@ export function bindPositionals(tool: McpTool, words: readonly string[]): Record
 }
 
 export async function runSend(home: string, words: readonly string[], opts: { raw?: boolean; replyTo?: string }, io: ToolsIo): Promise<number> {
+  const refusal = refused(home, io)
+  if (refusal !== null) return refusal
   const client = clientFor(home, io)
   let tool: McpTool | undefined
   try {
@@ -132,7 +157,7 @@ export async function runSend(home: string, words: readonly string[], opts: { ra
     return failure(io, err)
   }
   if (tool === undefined) {
-    io.err(`the server does not offer ${SEND_TOOL} to this caller${resolveIdentity(home) === null ? ' (signed out)' : ''}`)
+    io.err(`the server does not offer ${SEND_TOOL} to this caller${homeIdentity(home) === null ? ' (signed out)' : ''}`)
     return 1
   }
   const last = words[words.length - 1]
@@ -153,6 +178,8 @@ export async function runSend(home: string, words: readonly string[], opts: { ra
 }
 
 export async function runInbox(home: string, opts: { wait?: string; limit?: string; raw?: boolean }, io: ToolsIo): Promise<number> {
+  const refusal = refused(home, io)
+  if (refusal !== null) return refusal
   const args: Record<string, unknown> = { timeout_seconds: 0 }
   if (opts.wait !== undefined) {
     const seconds = Number(opts.wait)

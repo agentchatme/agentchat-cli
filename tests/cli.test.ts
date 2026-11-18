@@ -8,12 +8,13 @@ import { main, normalizeArgv } from '../src/main.js'
 import { configFromFlags, runListen } from '../src/listen.js'
 import { bindPositionals, renderResult } from '../src/tools.js'
 import { terminalSafe } from '../src/terminal.js'
-import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceEnvFrom, serviceLabelForHome } from '../src/home.js'
+import { durableListenerPath, invocation, manualPathFor, resolveHome, serviceEnvFrom, serviceLabelForHome, shellArg } from '../src/home.js'
 import { claudePresetDenyPaths, homeLabel, listenerChecks, removeKeyFiles } from '../src/identity.js'
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
 import { defaultPresetWorkdir, describeListenerConfig, listenerConfigPath, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
 import { presetPointer } from '../src/runners.js'
+import * as core from '@agentchatme/agent-core'
 import { alwaysOnWanted, manualPointer, MANUAL_URL, PEER_RUN_WARNING, writeIntegrationStatus, type IntegrationStatus } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath, claudeCodePreset, codexPreset } from '@agentchatme/agent-core/presets'
 import { installFakeClaude, installFakeCodex } from './helpers/fake-runtimes.js'
@@ -156,6 +157,92 @@ describe('the hosted tools from a shell', () => {
     await main(['--home', home, 'tools', 'list', '--json'])
     await main(['--home', home, 'inbox', '--raw'])
     expect([...out, ...err].join('\n')).not.toContain(KEY)
+  })
+})
+
+describe('the hands act as the home\'s agent only', () => {
+  // With another agent's key exported, `send` went out as THAT agent with
+  // `ok: true` on screen, and `tools call` answered as it, while the listener
+  // refused the same state. Every command that acts as the agent now follows
+  // the listener's rule: refused in one line, nothing sent.
+  let mcp: McpDouble
+  const OTHER = 'ac_live_' + 'o'.repeat(40)
+  beforeEach(async () => {
+    mcp = await startMcpDouble({ tools: [SEND_TOOL, INBOX_TOOL] })
+    signIn(mcp.apiBase)
+  })
+  afterEach(async () => mcp.close())
+
+  it('send, tools call, tools list and inbox refuse an exported key that is not the home\'s; the server sees nothing', async () => {
+    process.env['AGENTCHAT_API_KEY'] = OTHER
+    for (const argv of [['send', '@peer', 'hi'], ['tools', 'call', 'agentchat_inbox', '--json', '{}'], ['tools', 'list'], ['inbox']]) {
+      err.length = 0
+      expect(await main(['--home', home, ...argv]), argv.join(' ')).toBe(1)
+      expect(err.join('\n')).toMatch(/AGENTCHAT_API_KEY is exported and is not the key .* holds/)
+      expect(err.join('\n')).toContain('printenv AGENTCHAT_API_KEY | ')
+      expect(err.join('\n')).toContain(` --home ${shellArg(home)} login --api-key -`)
+    }
+    expect(mcp.seen).toEqual([])
+    expect([...out, ...err].join('\n')).not.toContain(OTHER)
+    expect([...out, ...err].join('\n')).not.toContain(KEY)
+  })
+
+  it('the same key exported is the same agent: it works, with the home\'s key on the wire', async () => {
+    process.env['AGENTCHAT_API_KEY'] = KEY
+    expect(await main(['--home', home, 'send', '@peer', 'hi'])).toBe(0)
+    expect(mcp.seen.length).toBeGreaterThan(0)
+    for (const call of mcp.seen) expect(call.headers['authorization']).toBe(`Bearer ${KEY}`)
+  })
+
+  it('a home with no key and one exported: refused too, as the listener refuses it', async () => {
+    fs.rmSync(path.join(home, 'credentials'))
+    process.env['AGENTCHAT_API_KEY'] = OTHER
+    expect(await main(['--home', home, 'send', '@peer', 'hi'])).toBe(1)
+    expect(err.join('\n')).toMatch(/there is none/)
+    expect(mcp.seen).toEqual([])
+  })
+})
+
+// `status`, `doctor` and `login` are the engine's: their refusals in words come
+// with the agent-core release after 0.5.2, and this runs once the pin moves there.
+describe.skipIf(!('envKeyConflict' in core))('the engine’s commands refuse another agent’s exported key', () => {
+  it('login does not adopt it and status refuses, both naming no key', async () => {
+    signIn('https://api.agentchat.test')
+    const other = 'ac_live_' + 'o'.repeat(40)
+    process.env['AGENTCHAT_API_KEY'] = other
+    expect(await main(['--home', home, 'login'])).toBe(1)
+    expect(await main(['--home', home, 'status'])).toBe(1)
+    expect(err.join('\n')).toContain('AGENTCHAT_API_KEY is exported')
+    expect([...out, ...err].join('\n')).not.toContain(other)
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'credentials'), 'utf-8'))).toMatchObject({ api_key: KEY })
+  })
+})
+
+describe('every printed next command reaches the home it was given', () => {
+  it('a home that is not the default rides along as --home, quoted when it has to be; the default home adds nothing', async () => {
+    const { invocationFor, shellArg, defaultHome } = await import('../src/home.js')
+    expect(invocationFor(defaultHome(), {})).toBe('agentchat')
+    expect(invocationFor(home, {})).toBe(`agentchat --home ${shellArg(home)}`)
+    expect(invocationFor(home, { npm_command: 'exec' })).toBe(`npx -y @agentchatme/cli --home ${shellArg(home)}`)
+    // AGENTCHAT_HOME pointing elsewhere: even the default home rides along, since a bare command would not reach it.
+    expect(invocationFor(defaultHome(), { AGENTCHAT_HOME: home })).toBe(`agentchat --home ${shellArg(defaultHome())}`)
+    expect(shellArg('/tmp/a b', 'linux')).toBe(`'/tmp/a b'`)
+    expect(shellArg("/tmp/it's", 'linux')).toBe(`'/tmp/it'\\''s'`)
+    expect(shellArg('C:\\Users\\a b', 'win32')).toBe('"C:\\Users\\a b"')
+  })
+
+  it('status and the register gate name this home, so neither sends the user to ~/.agentchat (where `logout` would delete another agent\'s key)', async () => {
+    expect(await main(['--home', home, 'status'])).toBe(0)
+    expect(out.join('\n')).toContain(`Set one up with: ${invocation()} --home ${shellArg(home)} register`)
+    // The worst case of the finding: a home holding an identity says to log out first — of THIS home, never the default.
+    fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe' }))
+    err.length = 0
+    expect(await main(['--home', home, 'register', '--email', 'a@example.com', '--handle', 'probe2'])).toBe(1)
+    expect(err.join('\n')).toContain(`Run \`${invocation()} --home ${shellArg(home)} logout\` first`)
+  })
+
+  it('the listener\'s and the hands\' refusals name the home too', () => {
+    expect(envKeyConflict(home, { AGENTCHAT_API_KEY: 'ac_live_' + 'z'.repeat(40) })).toContain(`agentchat --home ${shellArg(home)} login`)
   })
 })
 

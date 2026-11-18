@@ -1,17 +1,20 @@
 import * as fs from 'node:fs'
-import { credentialsPath, envApiKey, readCredentials } from '@agentchatme/agent-core'
+import { credentialsPath, readCredentials } from '@agentchatme/agent-core'
+import { invocationFor } from './home.js'
 import { listenerConfigPath } from './listener/config.js'
 
 // ─── What the listener refuses to run with ──────────────────────────────────
 //
 // Two splits a resident process must not live with:
 //
-//   * Identity. The listener serves the agent its home's `credentials` hold —
-//     the same agent the service, `status` and the runs' environment name.
-//     An `AGENTCHAT_API_KEY` exported in the shell that started it would
-//     otherwise quietly make the socket another agent than the files say.
-//     So the listener never takes its key from the environment, and when one
-//     is exported and differs from the home's, it does not start at all.
+//   * Identity. Every command that acts as the agent — the listener,
+//     `forward`, `watch`, and the hands: `tools`, `send`, `inbox` — acts as the
+//     agent its home's `credentials` hold: the same agent the service,
+//     `status` and the runs' environment name. An `AGENTCHAT_API_KEY` exported
+//     in the shell would otherwise quietly make it another agent than the
+//     files say (found in testing: `send` went out as another agent with no
+//     word on screen). So none takes its key from the environment, and when
+//     one is exported and is not the home's, none runs at all.
 //
 //   * Ownership. The boot service runs whatever `<home>/listener.json` says,
 //     as you, at every login. A file — or a home — that someone else owns or
@@ -19,15 +22,21 @@ import { listenerConfigPath } from './listener/config.js'
 //     `listen --install` tightens what it created (and refuses what it did
 //     not). POSIX permission bits; Windows ACLs are not checked.
 
-/** One line when an exported `AGENTCHAT_API_KEY` is not the key this home holds; null when it is absent or the same. */
+/**
+ * One line when an exported `AGENTCHAT_API_KEY` is not the key this home
+ * holds (or the home holds none); null when none is exported or it is the
+ * same. Never contains either key. The way out it names reaches this home
+ * (`--home`) and puts the key on no command line.
+ */
 export function envKeyConflict(home: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const exported = envApiKey(env)
-  if (exported === null) return null
+  const exported = env['AGENTCHAT_API_KEY']?.trim()
+  if (exported === undefined || exported.length === 0) return null
   const stored = readCredentials(home)
   if (stored !== null && stored.api_key === exported) return null
+  const cli = invocationFor(home, env)
   return stored === null
-    ? `AGENTCHAT_API_KEY is exported, but the listener serves only the agent whose key is in ${credentialsPath(home)}, and there is none: unset AGENTCHAT_API_KEY, or sign this home in (agentchat login).`
-    : `AGENTCHAT_API_KEY is exported and is not the key ${credentialsPath(home)} holds; the listener serves only the home's agent: unset AGENTCHAT_API_KEY, or sign this home in with that key (agentchat login).`
+    ? `AGENTCHAT_API_KEY is exported, but agentchat acts only as the agent whose key is in ${credentialsPath(home)}, and there is none: unset AGENTCHAT_API_KEY, or sign this home in with it (\`${cli} login\`).`
+    : `AGENTCHAT_API_KEY is exported and is not the key ${credentialsPath(home)} holds; agentchat acts only as the home's agent: unset AGENTCHAT_API_KEY, or sign this home in with that key on purpose (\`printenv AGENTCHAT_API_KEY | ${cli} login --api-key -\`).`
 }
 
 /** Why `target` may not be trusted as the owner's own (another owner, writable by group or others, a link where a file belongs); null when it may. */
