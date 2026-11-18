@@ -66,14 +66,11 @@ export function planListener(home: string, config: ListenerConfig, options: Plan
       const preset = presetNamed(config.preset)
       if (preset === null) throw new UnknownPresetError(`unknown preset "${config.preset}"`)
       const runtime: TextsRuntime = preset.runtime
-      return {
-        client: cliClient(runtime),
-        manualPath,
-        manualPointer: presetPointer(preset, config.profile, manualPath),
-        preset,
-        runner: {
-          name: preset.name,
-          create: (identity: RunnerIdentity) =>
+      // Built apart, then handed over: the pinned engine's RunnerFactory may not know `label` (the runtime's name in status) yet.
+      const factory = {
+        name: preset.name,
+        label: preset.label,
+        create: (identity: RunnerIdentity) =>
             preset.runner({
               home: identity.home,
               workdir: identity.workdir,
@@ -86,7 +83,13 @@ export function planListener(home: string, config: ListenerConfig, options: Plan
               clientVersion: VERSION,
               ...(options.presetCommand !== undefined ? { command: options.presetCommand } : {}),
             }),
-        },
+      }
+      return {
+        client: cliClient(runtime),
+        manualPath,
+        manualPointer: presetPointer(preset, config.profile, manualPath),
+        preset,
+        runner: factory,
       }
     }
     case 'forward': {

@@ -260,7 +260,7 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     expect(run?.argv.join(' ')).not.toContain(KEY)
   }, 40_000)
 
-  it.skipIf(!ENGINE_HAS_OWN)('own (the default): no listing, the user\'s config left alone, the key from a headers helper in the home — none in the run\'s environment', async () => {
+  it.skipIf(!ENGINE_HAS_OWN)('own (the default): the user\'s config left alone, the key from a headers helper in the home — none in the run\'s environment; Codex is asked first that nothing else would authenticate', async () => {
     const fake = installFakeCodex(tmp)
     const lists = path.join(tmp, 'own-mcp-lists.jsonl')
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex'), AGENTCHAT_RUN_PROFILE: '' }
@@ -271,11 +271,13 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     controller.abort()
     expect(await done).toBe(0)
     const [run] = readFakeRuns(fake)
-    expect(readFakeMcpLists(lists)).toEqual([])
     const helperPath = (presets as unknown as { codexListenerHeadersHelperPath: (home: string) => string }).codexListenerHeadersHelperPath(home)
     const helper = (presets as unknown as { codexHeadersHelperCommand: (script: string) => string }).codexHeadersHelperCommand(helperPath)
     const own = codexRunArgs('own' as never, { workdir: defaultPresetWorkdir(home), mcp: { url: `${server.apiBase}/mcp`, keyEnv: 'AGENTCHAT_LISTENER_API_KEY', headersHelper: helper, clientVersion: VERSION } as never })
     expect(run?.argv).toEqual(own)
+    // One listing, with the run's own flags: how Codex's agentchat entry authenticates (nothing is switched off).
+    expect(readFakeMcpLists(lists)).toHaveLength(1)
+    expect(readFakeMcpLists(lists)[0]?.argv).toEqual(['mcp', 'list', '--json', ...own.slice(own.indexOf('-c'), -1)])
     expect(fs.existsSync(helperPath)).toBe(true)
     expect(run?.env['AGENTCHAT_LISTENER_API_KEY']).toBeUndefined()
     expect(JSON.stringify(run)).not.toContain(KEY)
