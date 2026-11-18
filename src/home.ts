@@ -48,6 +48,28 @@ export function invocation(env: NodeJS.ProcessEnv = process.env): string {
   return env['npm_command'] === 'exec' ? `npx -y ${CLI_PACKAGE}` : CLI_BIN
 }
 
+/** One argument as the platform's shell takes it: bare when plain, else quoted. Never a key: only paths pass through here. */
+export function shellArg(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (/^[A-Za-z0-9@%+=:,./_~-]+$/.test(value)) return value
+  if (platform === 'win32') return `"${value.replace(/"/g, '""')}"`
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * What a user types to reach THIS home: `invocation()`, plus `--home <dir>`
+ * unless the home is `~/.agentchat` and a bare command reaches it too (no
+ * `AGENTCHAT_HOME` pointing elsewhere). Every command the CLI prints next is
+ * built on it: a printed `register --code`, `status` or `logout` without the
+ * home acts on whatever a bare command resolves to — another agent, whose
+ * only key a printed `logout` would delete (found in testing).
+ */
+export function invocationFor(home: string, env: NodeJS.ProcessEnv = process.env): string {
+  const base = invocation(env)
+  const target = path.resolve(home)
+  const bare = resolveHome(undefined, env)
+  return target === path.resolve(defaultHome()) && bare === target ? base : `${base} --home ${shellArg(target)}`
+}
+
 /** The served manual, kept current here (`<home>/skills/agentchat/SKILL.md`): a skills dir an owner can point a runtime at. */
 export function manualPathFor(home: string): string {
   return path.join(home, 'skills', MANUAL_SKILL_NAME, MANUAL_FILENAME)

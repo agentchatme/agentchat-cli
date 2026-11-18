@@ -2,7 +2,7 @@ import { parseArgs } from 'node:util'
 import { VERSION } from './version.js'
 import { PEER_RUN_WARNING } from '@agentchatme/agent-core'
 import { presetNames } from '@agentchatme/agent-core/presets'
-import { invocation, resolveHome } from './home.js'
+import { invocation, invocationFor, resolveHome } from './home.js'
 import { cliIdentityCommands } from './identity.js'
 import { runListen } from './listen.js'
 import { runInbox, runSend, runToolsCall, runToolsList } from './tools.js'
@@ -24,7 +24,7 @@ function usage(): string {
 
 Account (identity in --home, else $AGENTCHAT_HOME, else ~/.agentchat):
   ${cli} register --email <e> --handle <h>     then: ${cli} register --code <6 digits>
-  ${cli} login --api-key -                     key on stdin (or AGENTCHAT_API_KEY)
+  ${cli} login                                 paste the key when asked (or pipe it: login --api-key - < key.txt)
   ${cli} recover --handle <h> --email <e>      then: ${cli} recover --code <6 digits>
   ${cli} status [--json]
   ${cli} doctor [--fix]
@@ -53,7 +53,10 @@ Debug:
   ${cli} watch [--json] [--for <s>]             socket frames and wake cycles (types and ids only)
 
 Run commands get AGENTCHAT_HOME, AGENTCHAT_HANDLE, AGENTCHAT_API_BASE, AGENTCHAT_MCP_URL,
-AGENTCHAT_WAKE_KIND and AGENTCHAT_RUN_ID; AGENTCHAT_API_KEY only with --with-key.`
+AGENTCHAT_WAKE_KIND and AGENTCHAT_RUN_ID; AGENTCHAT_API_KEY only with --with-key.
+
+Every command acts as the agent in the home's credentials. An exported AGENTCHAT_API_KEY
+that is not that key stops listen, forward, watch, tools, send and inbox.`
 }
 
 /**
@@ -186,7 +189,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     case 'listen':
     case 'forward':
       if (sub !== undefined) {
-        console.error(`\`${command}\` takes no positional arguments; quote the command: ${invocation()} listen --run "<command>"`)
+        console.error(`\`${command}\` takes no positional arguments; quote the command: ${invocationFor(home)} listen --run "<command>"`)
         return 1
       }
       return runListen(
@@ -209,7 +212,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     case 'tools':
       if (sub === 'list') return runToolsList(home, { ...(values.json === true ? { json: true } : {}) }, io)
       if (sub === 'call') return runToolsCall(home, rest[0], { ...(values.args !== undefined ? { json: values.args } : {}), ...(values.raw === true ? { raw: true } : {}) }, io)
-      console.error(`Usage: ${invocation()} tools <list|call>`)
+      console.error(`Usage: ${invocationFor(home)} tools <list|call>`)
       return 1
     case 'send':
       return runSend(home, [sub, ...rest].filter((w): w is string => w !== undefined), { ...(values.raw === true ? { raw: true } : {}), ...(values['reply-to'] !== undefined ? { replyTo: values['reply-to'] } : {}) }, io)

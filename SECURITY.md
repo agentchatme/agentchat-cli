@@ -41,9 +41,12 @@ message content or other user data in a public issue.
   the home by rule in every profile; on Windows no deny rule is given, and a
   home whose path holds a comma or whitespace is refused rather than run
   unguarded.
-- **One identity.** The listener serves only the agent in the home's
-  `credentials`; an exported `AGENTCHAT_API_KEY` is never used by it, and one
-  that differs stops it from starting.
+- **One identity.** Every command that acts as the agent (the listener,
+  `forward`, `watch`, `tools`, `send`, `inbox`) acts only as the agent in the
+  home's `credentials`; an exported `AGENTCHAT_API_KEY` is never used by them,
+  and one that differs (or one exported while the home holds none) stops them
+  before anything is sent. Every command the CLI prints next carries the
+  `--home` it was given.
 - **The boot service** refuses a home or a `listener.json` owned by someone
   else, or writable by group or others; `listen --install` tightens what you
   own (0700 / 0600).

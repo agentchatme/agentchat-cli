@@ -2,6 +2,18 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## Unreleased
+
+### Fixed
+
+- **`send`, `tools call`, `tools list` and `inbox` never act as another agent.** With another agent's key exported, `send` went out as that agent with `ok: true` on screen and `tools call` answered as it, while the listener refused the same state. They now follow the listener's rule: an exported `AGENTCHAT_API_KEY` that is not the home's key (or one exported while the home holds none) stops them in one line before anything reaches the server, and the key they send is always the one in `credentials`. The same key exported works as before.
+- **Every printed next command carries the `--home` it acts on.** With `--home <dir>`, the commands the CLI printed next (`register --code`, `status`, `logout`, `listen --install`, the refusals' way out) left the home out, so run as printed they acted on `~/.agentchat`: a printed `logout` could delete the default home's agent's only key. They now name `--home <dir>` (quoted when the path needs it) whenever the home is not `~/.agentchat`.
+- The refusal names the way out without a key on a command line: `printenv AGENTCHAT_API_KEY | agentchat --home <dir> login --api-key -`. `doctor`'s check of it is now `env-key` and names every command it stops.
+
+### Docs
+
+- README, `SECURITY.md` and `--help`: `login` with a prompt or stdin only, never `--api-key <key>` or `AGENTCHAT_API_KEY`; what an exported key does to every command; printed commands carry `--home`.
+
 ## 0.2.2 — 2026-11-18
 
 Fixed existing behaviour, so patch +1 (`VERSIONING.md`): installs on Node 24 and 26. Bundles `@agentchatme/agent-core` 0.5.2, pinned exactly (the same release with the Node cap lifted). No code change.

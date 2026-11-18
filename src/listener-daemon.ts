@@ -5,6 +5,7 @@ import { readListenerConfig } from './listener/config.js'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { planListener } from './runners.js'
 import { envKeyConflict, listenerFilesProblem } from './guards.js'
+import { CLI_BIN, shellArg } from './home.js'
 
 // ─── The installed listener: what the service runs ──────────────────────────
 //
@@ -75,7 +76,8 @@ export async function listenerDaemon(argv: string[] = process.argv.slice(2)): Pr
         process.on('SIGINT', onSignal)
       }
     } else if (read.error !== lastError) {
-      log.warn(`${read.error} — waiting for one (\`agentchat listen … --install\` writes it)`)
+      // The service's environment is not the user's shell: the hint names the home it serves, plainly.
+      log.warn(`${read.error} — waiting for one (\`${CLI_BIN} --home ${shellArg(home)} listen … --install\` writes it)`)
       lastError = read.error
     }
     const deadline = Date.now() + CONFIG_POLL_MS

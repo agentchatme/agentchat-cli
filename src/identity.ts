@@ -20,7 +20,7 @@ import {
   presetNamed,
   type Preset,
 } from '@agentchatme/agent-core/presets'
-import { cliClient, invocation, manualPathFor } from './home.js'
+import { cliClient, invocationFor, manualPathFor } from './home.js'
 import { VERSION } from './version.js'
 import { installListenerService, listenerServiceCurrent, listenerServiceStatus } from './service.js'
 import { envKeyConflict, listenerFilesProblem } from './guards.js'
@@ -147,7 +147,7 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
   const checks: DoctorCheck[] = [check('listener', 'PASS', describeListenerConfig(config))]
   // What the boot service refuses: someone else's (or a shared-writable) home or config.
   const unsafe = listenerFilesProblem(home)
-  checks.push(unsafe === null ? check('listener-files', 'PASS', `${home} and listener.json are yours alone`) : check('listener-files', 'FAIL', `${unsafe} — the service refuses to run it; \`${invocation(env)} listen --install\` tightens files you own`))
+  checks.push(unsafe === null ? check('listener-files', 'PASS', `${home} and listener.json are yours alone`) : check('listener-files', 'FAIL', `${unsafe} — the service refuses to run it; \`${invocationFor(home, env)} listen --install\` tightens files you own`))
   const preset = config.mode === 'preset' ? presetNamed(config.preset) : null
   // A preset first: its preflight creates the work folder when there is none,
   // as the listener's does when it starts, so the folder is then judged as the
@@ -176,7 +176,7 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
       checks.push(
         config.mode === 'preset'
           ? check('workdir', 'WARN', `${config.workdir} does not exist yet — the listener creates it (owner-only) when it starts`)
-          : check('workdir', 'FAIL', `${config.workdir} does not exist — create it, or re-run \`${invocation(env)} listen … --install\` with \`--workdir <dir>\``),
+          : check('workdir', 'FAIL', `${config.workdir} does not exist — create it, or re-run \`${invocationFor(home, env)} listen … --install\` with \`--workdir <dir>\``),
       )
     } else if (config.mode === 'preset' && workdirExposesHome(config.workdir)) {
       // A preset run started by a peer's message would see the whole home there.
@@ -187,7 +187,7 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
           'WARN',
           `${config.workdir} is your home folder or contains it — ${
             config.profile === 'answer' && fallback !== null ? `answer runs work in ${fallback} instead` : "a run started by a peer's message there can see everything under it"
-          }; re-run \`${invocation(env)} listen --preset ${config.preset} --install --workdir <a folder of its own>\``,
+          }; re-run \`${invocationFor(home, env)} listen --preset ${config.preset} --install --workdir <a folder of its own>\``,
         ),
       )
     } else if (config.mode === 'preset' && stores.length > 0) {
@@ -195,7 +195,7 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
         check(
           'workdir',
           'WARN',
-          `${config.workdir} contains ${stores.join(' and ')}, where a key is, and a run working there can read it; re-run \`${invocation(env)} listen --preset ${config.preset} --install --workdir <a folder of its own>\``,
+          `${config.workdir} contains ${stores.join(' and ')}, where a key is, and a run working there can read it; re-run \`${invocationFor(home, env)} listen --preset ${config.preset} --install --workdir <a folder of its own>\``,
         ),
       )
     } else {
@@ -237,7 +237,7 @@ export function servingCheck(home: string, env: NodeJS.ProcessEnv = process.env)
       'listener-serving',
       'FAIL',
       gaveUp.reason === 'key_refused'
-        ? `this home gave the agent up: the server refuses its key (${gaveUp.detail}); signing in again here (\`${invocation(env)} login\` or \`recover\`) clears this at once — or log out here if another home serves the agent; it looks again at ${gaveUp.retry_at}`
+        ? `this home gave the agent up: the server refuses its key (${gaveUp.detail}); signing in again here (\`${invocationFor(home, env)} login\` or \`recover\`) clears this at once — or log out here if another home serves the agent; it looks again at ${gaveUp.retry_at}`
         : `this home gave the agent up to another listener that was waiting: ${gaveUp.detail} (since ${gaveUp.since}); a runtime check that passes clears this (next at ${gaveUp.retry_at}, every 60 s), and it takes the agent back whenever no other listener holds it`,
     )
   }
@@ -271,7 +271,7 @@ function serviceCheck(home: string, config: ListenerConfig | null, fix: boolean)
       return check('service', 'FAIL', `could not re-install: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  return check('service', 'FAIL', `installed but not current (an older version, or its definition changed) — \`${invocation()} doctor --fix\` re-installs it`)
+  return check('service', 'FAIL', `installed but not current (an older version, or its definition changed) — \`${invocationFor(home)} doctor --fix\` re-installs it`)
 }
 
 async function manualCheck(home: string, manual: ServedManual | null, apiBase: string | null, fix: boolean): Promise<DoctorCheck> {
@@ -296,20 +296,22 @@ export function cliProfile(home: string, env: NodeJS.ProcessEnv = process.env): 
     id: 'agentchat-cli',
     client: cliClient(),
     home: () => home,
-    invocation: () => invocation(env),
+    invocation: () => invocationFor(home, env),
     renderAnchor: renderAnchorBlock,
     place: async (_handle, _apiKey, _identityLine, manual) => {
-      const identity = resolveIdentity(home)
+      // The home's key only: a probe with an exported key would act as another agent.
+      const identity = resolveIdentity(home, { envKey: false })
       const result = await syncManual({ path: manualPathFor(home), served: manual, apiBase: identity?.apiBase ?? null })
       return [`  manual: ${describeManualSync(result)}`]
     },
     unplace: () => removeKeyFiles(home),
-    logoutHints: () => (alwaysOnWanted(home) ? [`The listener service stays installed and idles until you sign in again; \`${invocation(env)} listen --uninstall\` removes it.`] : []),
+    logoutHints: () => (alwaysOnWanted(home) ? [`The listener service stays installed and idles until you sign in again; \`${invocationFor(home, env)} listen --uninstall\` removes it.`] : []),
     extraStatus: async ({ manual }: StatusContext): Promise<string[]> => {
-      const identity = resolveIdentity(home)
+      // The home's key only: a probe with an exported key would act as another agent.
+      const identity = resolveIdentity(home, { envKey: false })
       const read = readListenerConfig(home)
       const lines = ['Listener:']
-      lines.push(read.ok ? `  ✓ ${describeListenerConfig(read.config)}` : `  ○ none installed — \`${invocation(env)} listen --run "<command>" --install\``)
+      lines.push(read.ok ? `  ✓ ${describeListenerConfig(read.config)}` : `  ○ none installed — \`${invocationFor(home, env)} listen --run "<command>" --install\``)
       if (alwaysOnWanted(home)) lines.push(`  service: ${listenerServiceStatus(home)}`)
       const manualState = checkManual({ path: manualPathFor(home), served: manual, apiBase: identity?.apiBase ?? null })
       lines.push(`  ${manualState.verdict === 'PASS' ? '✓' : '✗'} manual: ${manualState.detail}`)
@@ -320,10 +322,11 @@ export function cliProfile(home: string, env: NodeJS.ProcessEnv = process.env): 
       return lines
     },
     extraDoctorChecks: async (ctx: DoctorContext): Promise<DoctorCheck[]> => {
-      const identity = resolveIdentity(home)
+      // The home's key only: a probe with an exported key would act as another agent.
+      const identity = resolveIdentity(home, { envKey: false })
       const checks: DoctorCheck[] = [await manualCheck(home, ctx.manual, identity?.apiBase ?? null, ctx.fix === true)]
       const conflict = envKeyConflict(home, env)
-      if (conflict !== null) checks.push(check('listener-identity', 'WARN', `the listener will not start: ${conflict}`))
+      if (conflict !== null) checks.push(check('listener-identity', 'WARN', `the listener, forward, watch, tools, send and inbox will not run: ${conflict}`))
       const read = readListenerConfig(home)
       let config: ListenerConfig | null = null
       if (read.ok) {
