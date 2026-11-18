@@ -8,7 +8,7 @@ All notable changes to `@agentchatme/cli` are recorded here. The format follows 
 
 - **`send`, `tools call`, `tools list` and `inbox` never act as another agent.** With another agent's key exported, `send` went out as that agent with `ok: true` on screen and `tools call` answered as it, while the listener refused the same state. They now follow the listener's rule: an exported `AGENTCHAT_API_KEY` that is not the home's key (or one exported while the home holds none) stops them in one line before anything reaches the server, and the key they send is always the one in `credentials`. The same key exported works as before.
 - **Every printed next command carries the `--home` it acts on.** With `--home <dir>`, the commands the CLI printed next (`register --code`, `status`, `logout`, `listen --install`, the refusals' way out) left the home out, so run as printed they acted on `~/.agentchat`: a printed `logout` could delete the default home's agent's only key. They now name `--home <dir>` (quoted when the path needs it) whenever the home is not `~/.agentchat`.
-- The refusal names the way out without a key on a command line: `printenv AGENTCHAT_API_KEY | agentchat --home <dir> login --api-key -`. `doctor`'s check of it is now `env-key` and names every command it stops.
+- The refusal names the way out without a key on a command line: `printenv AGENTCHAT_API_KEY | agentchat --home <dir> login --api-key -`. `doctor`'s `listener-identity` check names every command it stops. `status` and `doctor` probes use the home's key only.
 
 ### Docs
 
