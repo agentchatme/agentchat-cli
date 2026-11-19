@@ -2,9 +2,9 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## 0.2.3 — 2026-11-18
+## 0.3.0 — 2026-11-19
 
-Fixed existing behaviour, so patch +1 (`VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.5.3, pinned exactly.
+Minor release (added behaviour → minor +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.6.0, pinned exactly.
 
 ### Changed
 
@@ -13,7 +13,10 @@ Fixed existing behaviour, so patch +1 (`VERSIONING.md`). Bundles `@agentchatme/a
   - Codex: no sandbox, approval, feature or permission-profile flag; the key from a headers helper in the home (`presets/codex.mcp-headers.mjs`) instead of the run's environment. It does not start while `$CODEX_HOME/.env` sets `AGENTCHAT_API_KEY` or the `agentchat` entry Codex reports names `bearer_token_env_var` (what a Codex integration from 0.5.2 or earlier left: Codex would send that agent's key in place of the helper's); `doctor`'s `preset-preflight` names the fix.
   - **Upgrade note: an installed preset listener switches to `own`.** Earlier releases wrote `answer` into `listener.json` at every install, `--profile` or not, so this release reads that `answer` as `own`; a recorded `work` or `full` is kept. The file is not rewritten; new installs write `listener.json` version 2. The service switches once it runs this release's listener: `agentchat doctor --fix` or `agentchat listen --install` re-installs it, and `status` says when it still runs an earlier one. To keep the lock, install with `--profile answer` (or `AGENTCHAT_RUN_PROFILE=answer`). A value that names no profile is `answer`.
   - `--profile` takes `own|answer|work|full`. `status` and `doctor` say in one line what the profile does (`runs the claude-code preset (profile own — reply runs use your own Claude Code permission settings, …)`). A Codex `own` listener's `doctor` writes the same fixed helper file the listener writes (no key in it).
-  - Needs the `@agentchatme/agent-core` release that adds `own`. Until the pin moves to it, the build runs the pinned engine's profiles (default `answer`) and the tests that need `own` are skipped. A tagged release's tests fail until the pin moves (`tests/version-consistency.test.ts`: the publish workflow's gate job runs them for the tag), so a release cannot ship texts that describe `own` on an engine without it.
+
+## 0.2.3 — 2026-11-18
+
+Fixed existing behaviour, so patch +1 (`VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.5.3, pinned exactly.
 
 ### Fixed
 
