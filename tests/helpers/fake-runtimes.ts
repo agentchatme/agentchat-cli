@@ -15,6 +15,11 @@ import * as path from 'node:path'
 //                                  off each one but agentchat.
 //   FAKE_MCP_LIST_MODE=fail|garbage   `mcp list` exits 1 / prints something not JSON
 //   FAKE_MCP_LIST_RECORD=<file>    where `mcp list` appends its argv and cwd
+//   FAKE_RUNTIME_FAIL_ON=<text>    a headless run whose prompt (stdin) contains
+//                                  it fails the way a provider refusal does:
+//                                  some output, `API Error: …`, exit 1. Any
+//                                  other run (a runtime check's fixed prompt
+//                                  included) answers.
 //
 // A run's record also says what its `--mcp-config` file held when it started
 // (server names and the file mode, never its contents: it carries a key) and
@@ -85,6 +90,7 @@ function install(root: string, name: string, version: string, authArgs: [string,
       '  const record = { argv: args, stdin, cwd: process.cwd(), env, mcpConfig, appendedSystemPrompt }',
       "  if (process.env.FAKE_RUNTIME_RECORD) fs.appendFileSync(process.env.FAKE_RUNTIME_RECORD, JSON.stringify(record) + '\\n')",
       "  process.stdout.write('model output that must be discarded\\n')",
+      "  if (process.env.FAKE_RUNTIME_FAIL_ON && stdin.includes(process.env.FAKE_RUNTIME_FAIL_ON)) { console.error('API Error: the provider refused this request'); process.exit(1) }",
       '  process.exit(0)',
       '}',
       `console.error('unsupported fake ${name} command: ' + args.join(' '))`,

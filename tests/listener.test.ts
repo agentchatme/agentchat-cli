@@ -5,8 +5,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { CommandRunner, RUN_ENV, commandRunEnv } from '../src/listener/command-runner.js'
 import { ForwardRunner, buildWakePayload, ensureForwardSecret, forwardSecretPath, forwardUrlProblem, readForwardSecret } from '../src/listener/forward.js'
-import { describeListenerConfig, readListenerConfig, writeListenerConfig, listenerConfigPath } from '../src/listener/config.js'
-import type { RunnerIdentity } from '@agentchatme/agent-core'
+import { describeListenerConfig, readListenerConfig, writeListenerConfig, listenerConfigPath, LISTENER_CONFIG_VERSION, type ListenerConfig } from '../src/listener/config.js'
+import { listenerRunOptions } from '../src/runners.js'
+import { RUN_CONTEXT_ENV, type RunnerIdentity } from '@agentchatme/agent-core'
 
 // ─── The listener's runners: the owner's command, the forwarder; its config ─
 
@@ -66,6 +67,24 @@ describe('CommandRunner — the owner\'s command, once per wake', () => {
     const env = commandRunEnv({ command: 'x', identity, withKey: true, env: {} }, { kind: 'invite', runId: 'r' })
     expect(env[RUN_ENV.apiKey]).toBe(KEY)
     expect(env[RUN_ENV.wakeKind]).toBe('invite')
+  })
+
+  it('a conversation run is told its conversation (the engine\'s run context); every other run never inherits one', () => {
+    const inherited = { AGENTCHAT_CONVERSATION_ID: 'conv_inherited', AGENTCHAT_WAKE_KIND: 'stale', AGENTCHAT_RUN_ID: 'stale' }
+    const conversation = commandRunEnv({ command: 'x', identity, env: inherited }, { kind: 'conversation', runId: 'r1', conversationId: 'conv_7' })
+    expect(conversation).toMatchObject({ [RUN_ENV.wakeKind]: 'conversation', [RUN_ENV.runId]: 'r1', [RUN_ENV.conversationId]: 'conv_7', [RUN_ENV.handle]: '@probe' })
+    for (const kind of ['invite', 'wake'] as const) {
+      const env = commandRunEnv({ command: 'x', identity, env: inherited }, { kind, runId: 'r2' })
+      expect(env[RUN_ENV.wakeKind]).toBe(kind)
+      expect(env[RUN_ENV.runId]).toBe('r2')
+      expect(env).not.toHaveProperty(RUN_ENV.conversationId)
+    }
+    // One spelling with the engine's.
+    expect([RUN_ENV.wakeKind, RUN_ENV.runId, RUN_ENV.conversationId]).toEqual([RUN_CONTEXT_ENV.wakeKind, RUN_CONTEXT_ENV.runId, RUN_CONTEXT_ENV.conversationId])
+  })
+
+  it('has no runtime check: a custom command\'s failed conversation run is reported only with another run\'s completion as evidence', () => {
+    expect('checkRuntime' in new CommandRunner({ command: 'true', identity })).toBe(false)
   })
 
   it('preflight honours the integration stopping: once its signal is aborted nothing is checked or written', async () => {
@@ -237,6 +256,18 @@ describe('ForwardRunner — one POST per wake, agentchat dialect', () => {
 
   it('refuses an address the rules do not allow, at construction', () => {
     expect(() => new ForwardRunner({ url: 'http://example.com/x', handle: 'p', home: identity.home, tray: async () => ({ conversations: [] }) })).toThrow(/only to this machine/)
+  })
+})
+
+describe('listenerRunOptions — what the resident loop is told, for the foreground and the installed listener alike', () => {
+  const base = { version: LISTENER_CONFIG_VERSION, workdir: '/w', updated_at: '2026-11-19T00:00:00.000Z' }
+  it('--run and a preset: one run per conversation; forward: one POST per wake, and no invite dismissed', () => {
+    const run = { ...base, mode: 'run', command: 'x', with_key: false } as ListenerConfig
+    const preset = { ...base, mode: 'preset', preset: 'claude-code', profile: 'answer', budget_ms: 60_000 } as ListenerConfig
+    const forward = { ...base, mode: 'forward', url: 'http://localhost:1/x' } as ListenerConfig
+    expect(listenerRunOptions(run)).toEqual({ credentialsFromHomeOnly: true, dismissIgnoredInvites: true, conversationRuns: true })
+    expect(listenerRunOptions(preset)).toEqual({ profile: 'answer', budgetMs: 60_000, credentialsFromHomeOnly: true, dismissIgnoredInvites: true, conversationRuns: true })
+    expect(listenerRunOptions(forward)).toEqual({ credentialsFromHomeOnly: true, dismissIgnoredInvites: false, conversationRuns: false })
   })
 })
 

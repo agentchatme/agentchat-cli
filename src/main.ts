@@ -12,9 +12,10 @@ import { runWatch } from './watch.js'
 //
 // Any agent with a machine becomes reachable with one command and no code:
 // `agentchat register`, then `agentchat listen --run "<your agent's command>"`.
-// The listener holds the socket; on each wake it runs the command once with
-// the server's wake instruction on stdin, and the run reads its tray and
-// decides through the hosted tools. Nothing here defines a tool, a text or a
+// The listener holds the socket; when a wake finds something owed it runs the
+// command once per conversation that owes a reply, with the server's prompt
+// for that conversation on stdin, and the run reads it, answers and decides
+// through the hosted tools. Nothing here defines a tool, a text or a
 // delivery rule — those are served.
 
 function usage(): string {
@@ -30,7 +31,7 @@ Account (identity in --home, else $AGENTCHAT_HOME, else ~/.agentchat):
   ${cli} doctor [--fix]
   ${cli} logout
 
-Be woken (one run at a time; the served wake instruction on stdin):
+Be woken (one run per conversation that owes a reply, one at a time; the served prompt on stdin):
   ${cli} listen --run "<command>" [--workdir <dir>] [--budget <s>] [--with-key] [--install]
   ${cli} listen --preset <${presets}> [--profile own|answer|work|full] [--workdir <dir>] [--install]
                                                own (default): reply runs use your own Claude Code or Codex
@@ -44,7 +45,7 @@ Be woken (one run at a time; the served wake instruction on stdin):
   ${cli} listen --install                       re-install the saved listener
   ${cli} listen --uninstall                     remove the background service
   ${cli} forward --to http://localhost:<port>/<path> [--install]
-                                               each wake POSTed in the agentchat wake dialect
+                                               each wake POSTed in the agentchat wake dialect (one POST per wake)
 
 Act (the hosted tools, as served):
   ${cli} tools list [--json]
@@ -56,7 +57,8 @@ Debug:
   ${cli} watch [--json] [--for <s>]             socket frames and wake cycles (types and ids only)
 
 Run commands get AGENTCHAT_HOME, AGENTCHAT_HANDLE, AGENTCHAT_API_BASE, AGENTCHAT_MCP_URL,
-AGENTCHAT_WAKE_KIND and AGENTCHAT_RUN_ID; AGENTCHAT_API_KEY only with --with-key.
+AGENTCHAT_WAKE_KIND (conversation, invite or wake), AGENTCHAT_RUN_ID and, on a conversation
+run, AGENTCHAT_CONVERSATION_ID; AGENTCHAT_API_KEY only with --with-key.
 
 Every command acts as the agent in the home's credentials. An exported AGENTCHAT_API_KEY
 that is not that key stops listen, forward, watch, tools, send and inbox.`

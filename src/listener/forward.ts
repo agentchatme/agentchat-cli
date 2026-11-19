@@ -20,6 +20,14 @@ import { log } from '@agentchatme/agent-core'
 // pending invites ride along as `invites` (ids and handles; receivers ignore
 // fields they do not know).
 //
+// One POST per wake, even when the served texts allow one run per
+// conversation: the listener runs this mode with `conversationRuns: false`
+// (`listenerRunOptions`), because the receiver reads the whole tray itself and
+// a POST per conversation would only repeat the same wake. So the kit reports
+// nothing here (could not process is about one conversation's run); a card
+// the receiver does not answer stays on the tray, and the server's re-wakes
+// come as before.
+//
 // What travels is what a wake carries: who you are, which conversations have
 // unread messages, how many, from whom, the cycle id. Never a message body —
 // the tray is read for its counts (`conversation_id`, `unread`, `last_sender`;

@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util'
 import { log } from '@agentchatme/agent-core'
 import { readListenerConfig } from './listener/config.js'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
-import { planListener } from './runners.js'
+import { listenerRunOptions, planListener } from './runners.js'
 import { envKeyConflict, listenerFilesProblem } from './guards.js'
 import { CLI_BIN, shellArg } from './home.js'
 
@@ -15,9 +15,10 @@ import { CLI_BIN, shellArg } from './home.js'
 // owner's choice, written by the owner — refused when the file or the home is
 // not the owner's alone) and hands it to the engine's resident supervisor,
 // serving only the agent the home's credentials hold: idle without an identity, connect when one appears, follow the
-// credential, one run at a time. Without a valid config it stays resident and
-// looks again every few seconds — exiting would only make the service manager
-// restart it in a loop.
+// credential, one run at a time (one per conversation that owes a reply; for
+// `forward`, one per wake: `listenerRunOptions`). Without a valid config it
+// stays resident and looks again every few seconds — exiting would only make
+// the service manager restart it in a loop.
 
 const CONFIG_POLL_MS = 10_000
 
@@ -62,10 +63,7 @@ export async function listenerDaemon(argv: string[] = process.argv.slice(2)): Pr
           client: plan.client,
           manualPointer: plan.manualPointer,
           manualPath: plan.manualPath,
-          ...(config.mode === 'preset' ? { profile: config.profile } : {}),
-          ...(config.budget_ms !== undefined ? { budgetMs: config.budget_ms } : {}),
-          credentialsFromHomeOnly: true,
-          dismissIgnoredInvites: config.mode !== 'forward',
+          ...listenerRunOptions(config),
         })
       } catch (err) {
         // An unknown preset (a config from a newer build): say it, keep looking.

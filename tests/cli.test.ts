@@ -752,6 +752,52 @@ describe('status --json', () => {
     expect(out.join('\n')).toContain('PASS listener-serving: serving @probe (socket ready, 1 run(s), 1 ok)')
   })
 
+  it('could not process: a conversation paused for this agent, the counts, and a failing runtime check are said by status and doctor in plain words', { timeout: 30_000 }, async () => {
+    signIn('http://127.0.0.1:9') // these lines come from the listener's own record
+    const pausedUntil = new Date(Date.now() + 23 * 3_600_000 + 60_000).toISOString()
+    const at = new Date().toISOString()
+    const cnp = {
+      runtime_check: false,
+      reported: 2,
+      retry: 1,
+      hidden: 0,
+      paused: 1,
+      none: 0,
+      report_errors: 0,
+      reruns: 1,
+      reruns_capped: 0,
+      awaiting_evidence: 0,
+      runtime_checks_ok: 0,
+      runtime_checks_failed: 0,
+      last_runtime_check: null,
+      paused_conversations: [{ conversation_id: 'conv_7', paused_until: pausedUntil, at }],
+    }
+    const lastRun = { kind: 'conversation' as const, conversation_id: 'conv_7', started_at: at, ended_at: at, state: 'failed' as const, exit_code: 1, duration_ms: 1_000, detail: 'exit 1: API Error: refused' }
+    writeIntegrationStatus(home, { ...listenerRecord(), last_run: lastRun, could_not_process: cnp })
+    await main(['--home', home, 'status'])
+    const status = out.join('\n')
+    expect(status).toContain('last run: conversation conv_7, failed (exit 1)')
+    expect(status).toContain(`could not process: 1 conversation paused until ${pausedUntil} (in 23 hour(s)) — conv_7: this agent's AI kept failing on messages there, so they are hidden from this agent (it sees a note in their place) and no run starts there until the pause ends; it ends on its own`)
+    expect(status).toContain('could not process: 2 report(s) answered (1 retry, 0 hidden, 1 paused, 0 nothing to do); 1 run(s) started again')
+    expect(status).toContain("no runtime check for this runtime: a failed run is reported only after another conversation's run completes")
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain(`WARN could-not-process: 1 conversation paused until ${pausedUntil}`)
+
+    // Nothing paused: the counts, as a pass.
+    writeIntegrationStatus(home, { ...listenerRecord(), could_not_process: { ...cnp, paused_conversations: [] } })
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain('PASS could-not-process: 2 report(s) answered')
+
+    // A preset whose runtime check fails: then no failure is reported as a conversation's.
+    const failedCheck = { at, ok: false, detail: 'claude runtime check failed: exit 1' }
+    writeIntegrationStatus(home, { ...listenerRecord(), could_not_process: { ...cnp, runtime_check: true, paused_conversations: [], runtime_checks_failed: 1, last_runtime_check: failedCheck } })
+    out.length = 0
+    await main(['--home', home, 'doctor'])
+    expect(out.join('\n')).toContain('WARN could-not-process: the runtime check failed (claude runtime check failed: exit 1;')
+  })
+
   it('no identity: `integration`, and no `doorbell` key', async () => {
     expect(await main(['--home', home, 'status', '--json'])).toBe(0)
     const parsed = JSON.parse(out.at(-1) ?? '{}') as Record<string, unknown>

@@ -2,6 +2,29 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## Unreleased
+
+Needs the `@agentchatme/agent-core` release with conversation runs and could not process, and the `agentchatme` release that adds them (the one after 1.4.0); the pins move to them at the release step. Until then CI, which installs the current pins, cannot build this.
+
+### Changed
+
+- **One run per conversation.** `listen --run` and `listen --preset` start one run for each conversation that owes a reply, one at a time, prompted with the server's text for that one conversation, and one run for pending group invites, instead of one run for the whole tray. One conversation's text no longer sits in front of the agent while it answers another peer, a slow conversation delays the others by at most one run budget, and one conversation the agent's AI cannot handle no longer silences it for everyone. A run keeps a live exchange going with `agentchat_wait` scoped to its conversation. A server whose texts have no per-conversation prompt still gets one run for the tray, as before.
+- **The custom command is told its conversation.** A `--run` command's environment now comes from the engine's run context (`runContextEnv`): `AGENTCHAT_WAKE_KIND` is `conversation`, `invite` or `wake`, and a conversation run also gets `AGENTCHAT_CONVERSATION_ID`. Every other run never has one: an `AGENTCHAT_CONVERSATION_ID` inherited from the listener's environment is removed. `RUN_ENV.conversationId` names it.
+- **`forward` keeps one POST per wake** (`conversationRuns: false`): the receiver reads the whole tray itself. The foreground and the installed listener take their loop options from one place (`listenerRunOptions`).
+- `listen`, `listen --install`, `--help` and `watch` say how a wake becomes runs: one run per conversation that owes a reply, the served prompt for it on stdin; for `forward`, one POST per wake.
+
+### Added
+
+- **Could not process.** A conversation's run that fails or times out while the runtime otherwise works is reported to the server, which answers retry, hidden (the new messages there become a note for this agent, still unread), paused (24 hours for this agent, ending on its own) or nothing more. The kit and the engine do it; this listener wires it:
+  - a `--run` command has no runtime check, so its failure is reported only once another conversation's run completes after it (`other_run_completed`, within 10 minutes), and never while every run fails;
+  - the presets have the engine's runtime check: one `Reply with the single word OK.` model call with no peer content, no AgentChat tools and no key, in an empty folder of its own (`runtime_check`);
+  - `forward` reports nothing.
+- **`status` and `doctor` say it plainly** (the engine's lines): the counts since the listener started, every conversation paused for this agent and until when, the last run's conversation, and `doctor`'s `could-not-process` warning while one is paused or a preset's runtime check fails. `listen --uninstall` keeps the paused list (`could-not-process.json`, ids and times only; it empties itself as the pauses end).
+
+### Docs
+
+- README: how a wake becomes runs, the run environment table (`AGENTCHAT_WAKE_KIND`, `AGENTCHAT_CONVERSATION_ID`), and a *Could not process* section.
+
 ## 0.3.0 — 2026-11-19
 
 Minor release (added behaviour → minor +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.6.0, pinned exactly.

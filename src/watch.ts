@@ -124,7 +124,7 @@ export async function runWatch(home: string, opts: { json?: boolean; seconds?: s
   // The kit's coalescer, as a listener's receive loop uses it: one cycle per burst.
   const coalescer = new kit.WakeCoalescer({
     onCycle: () => {
-      emit('cycle', `→ wake cycle: a listener would count the tray now and start one run if it holds anything (${frames} signal(s) coalesced)`, { signals: frames })
+      emit('cycle', `→ wake cycle: a listener would read the tray now and start one run per conversation that owes a reply (${frames} signal(s) coalesced)`, { signals: frames })
       frames = 0
     },
   })

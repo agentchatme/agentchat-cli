@@ -7,7 +7,7 @@ import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
 import { invocationFor, offByLegacySwitch } from './home.js'
 import { envKeyConflict, listenerFilesProblem, tightenListenerFiles } from './guards.js'
-import { planListener, type PlanOptions } from './runners.js'
+import { listenerRunOptions, planListener, type PlanOptions } from './runners.js'
 import { installListenerService, listenerServiceStatus, uninstallListenerService } from './service.js'
 
 // ─── `agentchat listen` / `agentchat forward` ───────────────────────────────
@@ -147,6 +147,17 @@ export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, 
   return { ok: false, error: `Missing what to run. Usage: ${invocationFor(io.home, io.env)} listen --run "<command>"  or  ${invocationFor(io.home, io.env)} listen --preset <${presetNames().join('|')}>` }
 }
 
+/**
+ * How the installed listener turns a wake into runs, in words: one run per
+ * conversation that owes a reply (the server's prompt for that one
+ * conversation on stdin), or for `forward` one POST per wake.
+ */
+function runsLine(config: Pick<ListenerConfig, 'mode'>): string {
+  return config.mode === 'forward'
+    ? 'one POST per wake, one at a time'
+    : 'one run per conversation that owes a reply, one at a time, the served prompt for it on stdin'
+}
+
 export async function runListen(home: string, mode: 'listen' | 'forward', flags: ListenFlags, io: ListenIo): Promise<number> {
   const env = io.env ?? process.env
   const cwd = io.cwd ?? process.cwd()
@@ -243,7 +254,7 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
           ...forwardNote.map((l) => `  ${l}`),
           identity === null
             ? `  It idles until this home has an identity: \`${cli} register\` or \`${cli} login\`.`
-            : `  Acting as @${identity.handle ?? '?'}; one run at a time, the served wake instruction on stdin.`,
+            : `  Acting as @${identity.handle ?? '?'}; ${runsLine(config)}.`,
           `  \`${cli} status\` shows what it does; \`${cli} listen --uninstall\` removes it.`,
         ].join('\n'),
       )
@@ -264,7 +275,9 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
       `Listening as @${identity.handle ?? '?'} — on each wake: ${describeListenerConfig(config).replace(/^runs/, 'run').replace(/^forwards/, 'forward')}.`,
       ...workdirLines,
       ...forwardNote,
-      'One run at a time; the served wake instruction goes to stdin; no message content is ever on a command line. Ctrl-C stops.',
+      config.mode === 'forward'
+        ? 'One POST per wake, one at a time; no message content is ever in it. Ctrl-C stops.'
+        : 'One run per conversation that owes a reply, one at a time; the served prompt for it goes to stdin; no message content is ever on a command line. Ctrl-C stops.',
     ].join('\n'),
   )
   const code = await runIntegration({
@@ -274,12 +287,8 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
     client: plan.client,
     manualPointer: plan.manualPointer,
     manualPath: plan.manualPath,
-    ...(config.mode === 'preset' ? { profile: config.profile } : {}),
-    ...(config.budget_ms !== undefined ? { budgetMs: config.budget_ms } : {}),
-    // The home's agent only, never an exported key's.
-    credentialsFromHomeOnly: true,
-    // A receiver's 2xx is no proof the agent saw an invite: never dismiss one in forward mode.
-    dismissIgnoredInvites: config.mode !== 'forward',
+    // The home's agent only; forward keeps one POST per wake and dismisses no invite.
+    ...listenerRunOptions(config),
     env,
     ...(io.signal !== undefined ? { signal: io.signal } : {}),
     ...(io.exit !== undefined ? { exit: io.exit } : {}),

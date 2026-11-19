@@ -3,7 +3,7 @@ import { clientIdentityOf, manualPointer, MANUAL_URL, type IntegrationClient, ty
 import { CommandRunner } from './listener/command-runner.js'
 import { ForwardRunner } from './listener/forward.js'
 import { type ListenerConfig } from './listener/config.js'
-import { type RunnerFactory, type RunnerIdentity } from '@agentchatme/agent-core/daemon'
+import { type RunIntegrationOpts, type RunnerFactory, type RunnerIdentity } from '@agentchatme/agent-core/daemon'
 import { presetNamed, type Preset } from '@agentchatme/agent-core/presets'
 import { cliClient, manualPathFor } from './home.js'
 import { VERSION } from './version.js'
@@ -42,6 +42,32 @@ export interface PlanOptions {
 export function presetPointer(preset: Pick<Preset, 'readsIdentityHome'>, profile: RunProfile, manualPath: string): string {
   if (profile === 'answer') return ''
   return preset.readsIdentityHome ? manualPointer(`at ${manualPath}`) : `(The AgentChat manual is at ${MANUAL_URL}.)`
+}
+
+/** What `runIntegration` is told for a listener config, beside its plan (`listenerRunOptions`). */
+export type ListenerRunOptions = Pick<RunIntegrationOpts, 'profile' | 'budgetMs' | 'credentialsFromHomeOnly' | 'dismissIgnoredInvites' | 'conversationRuns'>
+
+/**
+ * The resident loop's options for a listener config: one place for the
+ * foreground listener (`listen.ts`) and the installed one
+ * (`listener-daemon.ts`), so the two cannot drift.
+ *
+ *   - The home's agent only, never an exported key's.
+ *   - `--run` and a preset: one run per conversation that owes a reply
+ *     whenever the served texts allow it (the engine's default).
+ *   - `forward`: one run — one POST — per wake (`conversationRuns: false`).
+ *     Its receiver reads the whole tray itself, so a POST per conversation
+ *     would only repeat the same wake. And a receiver's 2xx is no proof the
+ *     agent saw an invite, so none is dismissed on the agent's behalf.
+ */
+export function listenerRunOptions(config: ListenerConfig): ListenerRunOptions {
+  return {
+    ...(config.mode === 'preset' ? { profile: config.profile } : {}),
+    ...(config.budget_ms !== undefined ? { budgetMs: config.budget_ms } : {}),
+    credentialsFromHomeOnly: true,
+    dismissIgnoredInvites: config.mode !== 'forward',
+    conversationRuns: config.mode !== 'forward',
+  }
 }
 
 /** Thrown for a config that names a preset this build does not have. */
