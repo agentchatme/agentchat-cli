@@ -14,6 +14,7 @@ import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListener
 import { OWN_PROFILE_WARNING, defaultPresetWorkdir, describeListenerConfig, listenerConfigPath, ownProfileLine, presetProfileSummary, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
 import { presetPointer } from '../src/runners.js'
+import { VERSION } from '../src/version.js'
 import * as core from '@agentchatme/agent-core'
 import { alwaysOnWanted, manualPointer, MANUAL_URL, PEER_RUN_WARNING, RUN_PROFILES, writeIntegrationStatus, type IntegrationStatus, type RunProfile } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath, claudeCodePreset, codexPreset } from '@agentchatme/agent-core/presets'
@@ -372,11 +373,96 @@ describe.skipIf(!ENGINE_HAS_OWN)('own: a preset listener acts as the agent itsel
     expect(configFromFlags('listen', { preset: 'codex', profile: 'own' }, io)).toMatchObject({ ok: true, config: { profile: 'own' } })
     expect(configFromFlags('listen', { preset: 'codex' }, { ...io, env: { AGENTCHAT_RUN_PROFILE: 'yolo' } })).toMatchObject({ ok: true, config: { profile: 'answer' } })
   })
+})
 
-  it('an installed listener keeps the profile its listener.json recorded; a re-install with --preset and no --profile takes the default', async () => {
-    writeListenerConfig(home, { version: 1, mode: 'preset', preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'w'), updated_at: 'x' })
+// ─── listener.json versions: an earlier release's recorded `answer` ─────────
+//
+// Releases before `own` wrote version 1 and recorded `answer` at every preset
+// install, passed or not. This release writes version 2; a version-1 `answer`
+// reads as `own`, the rest as written, and the file is never rewritten by a read.
+describe('listener.json versions', () => {
+  const v1 = (profile: string) => ({ version: 1, mode: 'preset', preset: 'codex', profile, workdir: path.join(tmp, 'w'), updated_at: 'x' })
+  const writeRaw = (config: object): string => {
+    const text = `${JSON.stringify(config, null, 2)}\n`
+    fs.writeFileSync(listenerConfigPath(home), text, { mode: 0o600 })
+    return text
+  }
+  const onDisk = (): Record<string, unknown> => JSON.parse(fs.readFileSync(listenerConfigPath(home), 'utf8')) as Record<string, unknown>
+  const installIo = (env: NodeJS.ProcessEnv = { ...process.env, AGENTCHAT_RUN_PROFILE: '' }) => {
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '//\n')
+    const lines: string[] = []
+    return { lines, io: { out: (l: string) => lines.push(l), err: (l: string) => lines.push(l), cwd: tmp, env, shipped } }
+  }
+
+  it.skipIf(!ENGINE_HAS_OWN)('a version-1 `answer` (what every earlier preset install recorded) is read as own; the file is left as it was', () => {
+    const text = writeRaw(v1('answer'))
+    expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { version: 2, mode: 'preset', preset: 'codex', profile: 'own', workdir: path.join(tmp, 'w') } })
+    expect(fs.readFileSync(listenerConfigPath(home), 'utf8')).toBe(text)
+  })
+
+  it('a version-1 `work` or `full` keeps its profile; a version-2 file is taken exactly as written, `answer` included', () => {
+    for (const profile of ['work', 'full']) {
+      writeRaw(v1(profile))
+      expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { version: 2, profile } })
+    }
+    for (const profile of ['answer', 'work', 'full', ...(ENGINE_HAS_OWN ? ['own'] : [])]) {
+      writeRaw({ ...v1(profile), version: 2 })
+      expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { version: 2, profile } })
+    }
+    writeRaw({ ...v1('answer'), version: 3 })
+    expect(readListenerConfig(home)).toMatchObject({ ok: false, error: expect.stringContaining('version: expected 1 or 2 (a newer release wrote it') })
+  })
+
+  it.skipIf(!ENGINE_HAS_OWN)('`status` says own for a version-1 `answer`; `listen --install` with nothing else re-installs it as own and leaves the file alone', { timeout: 30_000 }, async () => {
+    signIn('http://127.0.0.1:9')
+    const text = writeRaw(v1('answer'))
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).toContain(`✓ runs the codex preset (profile own — ${presetProfileSummary('own', 'Codex')}) in ${path.join(tmp, 'w')}`)
+    const { lines, io } = installIo()
+    expect(await runListen(home, 'listen', { install: true }, io)).toBe(0)
+    expect(lines.join('\n')).toContain('runs the codex preset (profile own — ')
+    expect(fs.readFileSync(listenerConfigPath(home), 'utf8')).toBe(text)
+  })
+
+  it.skipIf(!ENGINE_HAS_OWN)('a new install without --profile writes version 2 with own', async () => {
+    const { io } = installIo()
+    expect(await runListen(home, 'listen', { preset: 'claude-code', install: true }, io)).toBe(0)
+    expect(onDisk()).toMatchObject({ version: 2, mode: 'preset', preset: 'claude-code', profile: 'own' })
+  })
+
+  it('--profile answer (or AGENTCHAT_RUN_PROFILE=answer) at install writes version 2 with answer, which stays the lock', async () => {
+    writeRaw(v1('answer'))
+    const { io } = installIo()
+    expect(await runListen(home, 'listen', { preset: 'codex', profile: 'answer', install: true }, io)).toBe(0)
+    expect(onDisk()).toMatchObject({ version: 2, profile: 'answer' })
     expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { profile: 'answer' } })
-    expect(configFromFlags('listen', { preset: 'codex' }, { env: {}, cwd: tmp, home, saved: (readListenerConfig(home) as { config: never }).config })).toMatchObject({ ok: true, config: { profile: 'own' } })
+
+    fs.rmSync(listenerConfigPath(home))
+    const byEnv = installIo({ ...process.env, AGENTCHAT_RUN_PROFILE: 'answer' })
+    expect(await runListen(home, 'listen', { preset: 'codex', install: true }, byEnv.io)).toBe(0)
+    expect(onDisk()).toMatchObject({ version: 2, profile: 'answer' })
+    expect(readListenerConfig(home)).toMatchObject({ ok: true, config: { profile: 'answer' } })
+  })
+
+  it('every write is version 2: a version-1 input is written as it reads', () => {
+    writeListenerConfig(home, { version: 1, mode: 'preset', preset: 'codex', profile: 'work', workdir: path.join(tmp, 'w'), updated_at: 'x' })
+    expect(onDisk()).toMatchObject({ version: 2, profile: 'work' })
+    writeListenerConfig(home, { version: 1, mode: 'preset', preset: 'codex', profile: 'answer', workdir: path.join(tmp, 'w'), updated_at: 'x' })
+    expect(onDisk()).toMatchObject({ version: 2, profile: ENGINE_HAS_OWN ? 'own' : 'answer' })
+  })
+
+  it('`status` says when the service still runs an earlier release\'s listener (it reads listener.json as that release did), and what replaces it', { timeout: 30_000 }, async () => {
+    signIn('http://127.0.0.1:9')
+    writeRaw(v1('work'))
+    core.markAlwaysOnWanted(home)
+    core.markAlwaysOnInstalledVersion(home, '0.1.1')
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).toContain(`✗ the service runs the listener from 0.1.1, not this release's (${VERSION}) — \`${invocation()} --home ${shellArg(home)} doctor --fix\` re-installs it`)
+    core.markAlwaysOnInstalledVersion(home, VERSION)
+    out.length = 0
+    await main(['--home', home, 'status'])
+    expect(out.join('\n')).not.toContain('the service runs the listener from')
   })
 })
 

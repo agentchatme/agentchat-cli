@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { agentLockDir, alwaysOnWanted, checkManual, DEFAULT_API_BASE, createIdentityCommands, describeManualSync, integrationStatusAge, probeHostedMcp, readCredentials, readIntegrationStatus, renderAnchorBlock, resolveIdentity, syncManual, workdirExposesHome, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type RunProfile, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
+import { agentLockDir, alwaysOnWanted, checkManual, DEFAULT_API_BASE, createIdentityCommands, describeManualSync, integrationStatusAge, probeHostedMcp, readAlwaysOnInstalledVersion, readCredentials, readIntegrationStatus, renderAnchorBlock, resolveIdentity, syncManual, workdirExposesHome, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type RunProfile, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
 import { describeListenerConfig, readListenerConfig, type ListenerConfig } from './listener/config.js'
 import { forwardUrlProblem, readForwardSecret } from './listener/forward.js'
 import {
@@ -316,7 +316,12 @@ export function cliProfile(home: string, env: NodeJS.ProcessEnv = process.env): 
       const read = readListenerConfig(home)
       const lines = ['Listener:']
       lines.push(read.ok ? `  ✓ ${describeListenerConfig(read.config)}` : `  ○ none installed — \`${invocationFor(home, env)} listen --run "<command>" --install\``)
-      if (alwaysOnWanted(home)) lines.push(`  service: ${listenerServiceStatus(home)}`)
+      if (alwaysOnWanted(home)) {
+        lines.push(`  service: ${listenerServiceStatus(home)}`)
+        // The service runs the copy its install placed: until it is replaced, it reads listener.json as that release did.
+        const copied = readAlwaysOnInstalledVersion(home)
+        if (copied !== VERSION) lines.push(`  ✗ the service runs the listener from ${copied ?? 'an earlier release'}, not this release's (${VERSION}) — \`${invocationFor(home, env)} doctor --fix\` re-installs it`)
+      }
       const manualState = checkManual({ path: manualPathFor(home), served: manual, apiBase: identity?.apiBase ?? null })
       lines.push(`  ${manualState.verdict === 'PASS' ? '✓' : '✗'} manual: ${manualState.detail}`)
       if (identity !== null) {

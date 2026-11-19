@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { ensureForwardSecret, forwardSecretPath, forwardUrlProblem } from './listener/forward.js'
-import { defaultPresetWorkdir, describeListenerConfig, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
+import { defaultPresetWorkdir, describeListenerConfig, LISTENER_CONFIG_VERSION, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
 import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, PEER_RUN_WARNING, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
@@ -115,7 +115,7 @@ export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, 
   const chosen = flags.workdir !== undefined ? { workdir: path.resolve(io.cwd, flags.workdir) } : preset ? presetWorkdir(io) : shellWorkdir(mode, io)
   const workdir = chosen.workdir
   const note = chosen.note !== undefined ? { workdirNote: chosen.note } : {}
-  const common = { version: 1 as const, workdir, ...(budget !== undefined ? { budget_ms: budget } : {}), updated_at: new Date().toISOString() }
+  const common = { version: LISTENER_CONFIG_VERSION, workdir, ...(budget !== undefined ? { budget_ms: budget } : {}), updated_at: new Date().toISOString() }
 
   if (mode === 'forward') {
     if (flags.run !== undefined || flags.preset !== undefined) return { ok: false, error: '`forward` takes --to only; `listen` runs a command' }

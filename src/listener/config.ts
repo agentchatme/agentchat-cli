@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import { z } from 'zod'
-import { PEER_RUN_WARNING, RUN_PROFILES } from '@agentchatme/agent-core'
+import { DEFAULT_RUN_PROFILE, PEER_RUN_WARNING, RUN_PROFILES } from '@agentchatme/agent-core'
 import { presetNamed } from '@agentchatme/agent-core/presets'
 import { atomicWriteFile, readJsonFile } from '@agentchatme/agent-core'
 
@@ -20,15 +20,29 @@ import { atomicWriteFile, readJsonFile } from '@agentchatme/agent-core'
 //            would ask refused); `answer` gives a run the AgentChat tools and
 //            reads inside its work folder only; with `work` or `full`, runs
 //            started by peers' messages can read and change this machine. The
-//            profile is recorded here at install, so an installed listener
-//            keeps it until it is installed again (a file without one, which
-//            this CLI never writes, is read as `answer`)
+//            profile is recorded here at install (a version-2 file without
+//            one, which this CLI never writes, is read as `answer`)
 //   forward  each wake POSTed to the owner's endpoint (the `agentchat` dialect)
+//
+// Versions. 2: this release's, taken exactly as written. 1: written by the
+// releases before `own`, which recorded the profile at every preset install,
+// `answer` (then the default) whether or not `--profile` was passed. So a
+// version-1 `answer` (or no profile, which meant `answer` then) is no choice
+// anyone can be held to: it is read as today's default (`own`), and its
+// `work` or `full` as written. That reading happens
+// here, in the schema, so the service, `listen`, `status` and `doctor` all
+// see the same profile; the file itself is not rewritten. Installing with
+// `--profile answer` writes version 2 with `answer`, which keeps the lock.
 
 export const LISTENER_CONFIG_FILE = 'listener.json'
 
+/** The `listener.json` version this release writes. */
+export const LISTENER_CONFIG_VERSION = 2 as const
+
 const Common = {
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(LISTENER_CONFIG_VERSION)], {
+    errorMap: () => ({ message: `expected 1 or ${LISTENER_CONFIG_VERSION} (a newer release wrote it: install the listener again with this one)` }),
+  }),
   /** The run's working directory (the owner's, chosen at install). */
   workdir: z.string().min(1),
   /** A run is killed past this. Absent: `AGENTCHAT_RUN_BUDGET_MS`, then 10 min. */
@@ -36,7 +50,8 @@ const Common = {
   updated_at: z.string(),
 }
 
-export const ListenerConfigSchema = z.discriminatedUnion('mode', [
+/** A `listener.json` as written, either version. */
+const ListenerConfigFileSchema = z.discriminatedUnion('mode', [
   z.object({
     ...Common,
     mode: z.literal('run'),
@@ -57,7 +72,23 @@ export const ListenerConfigSchema = z.discriminatedUnion('mode', [
   }),
 ])
 
-export type ListenerConfig = z.infer<typeof ListenerConfigSchema>
+type ListenerConfigFile = z.output<typeof ListenerConfigFileSchema>
+
+/** A listener config as this release reads it: always this version, the profile as it means today. */
+export type ListenerConfig = ListenerConfigFile & { version: typeof LISTENER_CONFIG_VERSION }
+
+/**
+ * The one place a version-1 file is read in today's terms (see "Versions"
+ * above): its `answer` is the default, everything else as written.
+ */
+function inTodaysTerms(file: ListenerConfigFile): ListenerConfig {
+  if (file.version === 1 && file.mode === 'preset' && file.profile === 'answer') return { ...file, version: LISTENER_CONFIG_VERSION, profile: DEFAULT_RUN_PROFILE }
+  return { ...file, version: LISTENER_CONFIG_VERSION }
+}
+
+/** Parses a `listener.json` of either version into this release's terms. Every reader and the writer go through it. */
+export const ListenerConfigSchema = ListenerConfigFileSchema.transform(inTodaysTerms)
+
 export type ListenerConfigInput = z.input<typeof ListenerConfigSchema>
 
 export function listenerConfigPath(home: string): string {
@@ -87,6 +118,7 @@ export function readListenerConfig(home: string): ListenerConfigRead {
   return { ok: true, config: parsed.data }
 }
 
+/** Writes this release's version, always: a version-1 input is written as it reads (`inTodaysTerms`). */
 export function writeListenerConfig(home: string, config: ListenerConfigInput): ListenerConfig {
   const parsed = ListenerConfigSchema.parse(config)
   atomicWriteFile(listenerConfigPath(home), `${JSON.stringify(parsed, null, 2)}\n`, 0o600)

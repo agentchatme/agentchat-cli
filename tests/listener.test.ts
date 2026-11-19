@@ -242,13 +242,15 @@ describe('ForwardRunner — one POST per wake, agentchat dialect', () => {
 
 describe('listener.json', () => {
   it('round-trips each mode, owner-only; a broken file says why; the description never carries a key', () => {
-    const base = { version: 1 as const, workdir: identity.workdir, updated_at: '2026-11-08T00:00:00Z' }
+    const base = { version: 2 as const, workdir: identity.workdir, updated_at: '2026-11-08T00:00:00Z' }
     const run = writeListenerConfig(identity.home, { ...base, mode: 'run', command: 'my-agent --once' })
     expect(run).toMatchObject({ mode: 'run', with_key: false })
+    expect(JSON.parse(fs.readFileSync(listenerConfigPath(identity.home), 'utf8'))).toMatchObject({ version: 2, mode: 'run' })
     expect(readListenerConfig(identity.home)).toEqual({ ok: true, config: run })
     if (process.platform !== 'win32') expect(fs.statSync(listenerConfigPath(identity.home)).mode & 0o777).toBe(0o600)
     expect(describeListenerConfig(run)).toBe(`runs \`my-agent --once\` in ${identity.workdir}`)
 
+    // A file without a profile (this CLI never writes one) is the lock.
     const preset = writeListenerConfig(identity.home, { ...base, mode: 'preset', preset: 'codex' })
     expect(preset).toMatchObject({ profile: 'answer' })
     const forward = writeListenerConfig(identity.home, { ...base, mode: 'forward', url: 'http://localhost:1/x' })
