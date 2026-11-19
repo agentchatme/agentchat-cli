@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { agentLockDir, alwaysOnWanted, checkManual, DEFAULT_API_BASE, createIdentityCommands, describeManualSync, integrationStatusAge, probeHostedMcp, readCredentials, readIntegrationStatus, renderAnchorBlock, resolveIdentity, syncManual, workdirExposesHome, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type RunProfile, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
+import { agentLockDir, alwaysOnWanted, checkManual, DEFAULT_API_BASE, createIdentityCommands, describeManualSync, integrationStatusAge, probeHostedMcp, readAlwaysOnInstalledVersion, readCredentials, readIntegrationStatus, renderAnchorBlock, resolveIdentity, syncManual, workdirExposesHome, type DoctorCheck, type DoctorContext, type HostProfile, type IdentityCommands, type RunProfile, type ServedManual, type StatusContext } from '@agentchatme/agent-core'
 import { describeListenerConfig, readListenerConfig, type ListenerConfig } from './listener/config.js'
 import { forwardUrlProblem, readForwardSecret } from './listener/forward.js'
 import {
@@ -66,7 +66,9 @@ export function removeKeyFiles(home: string): string[] {
 
 /**
  * The preset runner's own preflight — the gate the listener applies before it
- * holds the socket — in its words. For `answer` that includes Claude Code's
+ * holds the socket — in its words. A Codex `own` runner writes its fixed
+ * headers helper into the home's `presets/` (no key in it; the same bytes the
+ * listener writes). For `answer` that includes Claude Code's
  * refusal while a settings file lists `permissions.additionalDirectories`, and
  * Codex's while one of its MCP servers cannot be switched off for a run (its
  * listing runs, with the listener's key in its environment, as the
@@ -131,7 +133,7 @@ export async function presetPreflightCheck(home: string, preset: Preset, profile
     : check('preset-preflight', 'FAIL', `${preset.label}: no run starts: ${pre.detail ?? "the preset's preflight failed"}`)
 }
 
-/** The folder an answer run of `preset` works in when its work folder is the home folder or contains it. */
+/** The folder an own or answer run of `preset` works in when its work folder is the home folder or contains it. */
 function answerFallbackFor(preset: Preset, env: NodeJS.ProcessEnv): string | null {
   if (preset.name === CLAUDE_CODE_PRESET) return claudeAnswerFallbackWorkdir(claudeConfigDirFrom(env))
   if (preset.name === CODEX_PRESET) return codexAnswerFallbackWorkdir(codexHomeFrom(env))
@@ -158,8 +160,9 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
     else {
       const inspected = await preset.inspect(env)
       presetChecks.push(check('preset', inspected.ok ? 'PASS' : 'FAIL', `${preset.label}: ${inspected.detail}`))
-      // The hosted-tool configuration a run of this preset will see (no key printed).
-      for (const line of preset.describeMcp({ home, apiBase, env })) presetChecks.push(check('preset-mcp', 'PASS', line))
+      // The hosted-tool configuration a run of this preset will see (no key printed), for its profile.
+      const mcpContext = { home, apiBase, env, profile: config.profile }
+      for (const line of preset.describeMcp(mcpContext)) presetChecks.push(check('preset-mcp', 'PASS', line))
       // The runner's own gate needs a working, signed-in runtime first; the check above says when it is not.
       if (inspected.ok) presetChecks.push(await presetPreflightCheck(home, preset, config.profile, config.workdir, env, apiBase))
     }
@@ -186,7 +189,8 @@ export async function listenerChecks(home: string, config: ListenerConfig, env: 
           'workdir',
           'WARN',
           `${config.workdir} is your home folder or contains it — ${
-            config.profile === 'answer' && fallback !== null ? `answer runs work in ${fallback} instead` : "a run started by a peer's message there can see everything under it"
+            // A string compare: the pinned engine names the profiles.
+            (config.profile === 'answer' || (config.profile as string) === 'own') && fallback !== null ? `${config.profile} runs work in ${fallback} instead` : "a run started by a peer's message there can see everything under it"
           }; re-run \`${invocationFor(home, env)} listen --preset ${config.preset} --install --workdir <a folder of its own>\``,
         ),
       )
@@ -312,7 +316,12 @@ export function cliProfile(home: string, env: NodeJS.ProcessEnv = process.env): 
       const read = readListenerConfig(home)
       const lines = ['Listener:']
       lines.push(read.ok ? `  ✓ ${describeListenerConfig(read.config)}` : `  ○ none installed — \`${invocationFor(home, env)} listen --run "<command>" --install\``)
-      if (alwaysOnWanted(home)) lines.push(`  service: ${listenerServiceStatus(home)}`)
+      if (alwaysOnWanted(home)) {
+        lines.push(`  service: ${listenerServiceStatus(home)}`)
+        // The service runs the copy its install placed: until it is replaced, it reads listener.json as that release did.
+        const copied = readAlwaysOnInstalledVersion(home)
+        if (copied !== VERSION) lines.push(`  ✗ the service runs the listener from ${copied ?? 'an earlier release'}, not this release's (${VERSION}) — \`${invocationFor(home, env)} doctor --fix\` re-installs it`)
+      }
       const manualState = checkManual({ path: manualPathFor(home), served: manual, apiBase: identity?.apiBase ?? null })
       lines.push(`  ${manualState.verdict === 'PASS' ? '✓' : '✗'} manual: ${manualState.detail}`)
       if (identity !== null) {

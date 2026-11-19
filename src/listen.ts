@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { ensureForwardSecret, forwardSecretPath, forwardUrlProblem } from './listener/forward.js'
-import { defaultPresetWorkdir, describeListenerConfig, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
+import { defaultPresetWorkdir, describeListenerConfig, LISTENER_CONFIG_VERSION, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
 import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, PEER_RUN_WARNING, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
@@ -25,8 +25,8 @@ import { installListenerService, listenerServiceStatus, uninstallListenerService
 // its relative paths mean what they meant in that shell. A preset: a folder of
 // its own beside the home (`defaultPresetWorkdir`), in every profile. A
 // preset's run is started by any peer's message, a stranger's cold DM
-// included: an `answer` run reads every file in its work folder, and a `work`
-// run edits there without asking, so the default is an empty folder rather
+// included: an `own` or `answer` run reads every file in its work folder, and
+// a `work` run edits there without asking, so the default is an empty folder rather
 // than whatever directory the install happened to run in; `--workdir <dir>`
 // is the opt-in to give runs a project. A re-install keeps the folder the
 // installed preset listener already has, and any change to an installed
@@ -115,7 +115,7 @@ export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, 
   const chosen = flags.workdir !== undefined ? { workdir: path.resolve(io.cwd, flags.workdir) } : preset ? presetWorkdir(io) : shellWorkdir(mode, io)
   const workdir = chosen.workdir
   const note = chosen.note !== undefined ? { workdirNote: chosen.note } : {}
-  const common = { version: 1 as const, workdir, ...(budget !== undefined ? { budget_ms: budget } : {}), updated_at: new Date().toISOString() }
+  const common = { version: LISTENER_CONFIG_VERSION, workdir, ...(budget !== undefined ? { budget_ms: budget } : {}), updated_at: new Date().toISOString() }
 
   if (mode === 'forward') {
     if (flags.run !== undefined || flags.preset !== undefined) return { ok: false, error: '`forward` takes --to only; `listen` runs a command' }
@@ -136,7 +136,10 @@ export function configFromFlags(mode: 'listen' | 'forward', flags: ListenFlags, 
     if (flags.withKey === true) return { ok: false, error: '--with-key belongs to --run; a preset hands its runs the key itself' }
     if (presetNamed(flags.preset) === null) return { ok: false, error: `unknown preset "${flags.preset}" (presets: ${presetNames().join(', ')})` }
     if (flags.profile !== undefined && !isRunProfile(flags.profile)) {
-      return { ok: false, error: `--profile is answer, work or full (answer, the default: the AgentChat tools and reads inside the run's work folder only; work and full: ${PEER_RUN_WARNING})` }
+      return {
+        ok: false,
+        error: `--profile is own, answer, work or full (own, the default: reply runs use your own Claude Code or Codex permission settings, with anything that would ask refused; answer: the AgentChat tools and reads inside the run's work folder only; work and full: ${PEER_RUN_WARNING})`,
+      }
     }
     const profile = flags.profile !== undefined && isRunProfile(flags.profile) ? flags.profile : resolveRunProfile(io.env)
     return { ok: true, config: { ...common, mode: 'preset', preset: flags.preset, profile }, ...note }
