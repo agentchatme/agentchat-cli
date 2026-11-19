@@ -21,6 +21,10 @@ import * as path from 'node:path'
 //                                  other run (a runtime check's fixed prompt
 //                                  included) answers.
 //
+// With `--output-format json` (Claude Code's runtime check) a run answers one
+// result object shaped as Claude Code's (`type`, `subtype`, `is_error`,
+// `result`; `is_error: true` when it fails).
+//
 // A run's record also says what its `--mcp-config` file held when it started
 // (server names and the file mode, never its contents: it carries a key) and
 // the text of its `--append-system-prompt-file`.
@@ -89,8 +93,10 @@ function install(root: string, name: string, version: string, authArgs: [string,
       "  if (sp >= 0) { try { appendedSystemPrompt = fs.readFileSync(args[sp + 1], 'utf8') } catch { appendedSystemPrompt = 'unreadable' } }",
       '  const record = { argv: args, stdin, cwd: process.cwd(), env, mcpConfig, appendedSystemPrompt }',
       "  if (process.env.FAKE_RUNTIME_RECORD) fs.appendFileSync(process.env.FAKE_RUNTIME_RECORD, JSON.stringify(record) + '\\n')",
-      "  process.stdout.write('model output that must be discarded\\n')",
-      "  if (process.env.FAKE_RUNTIME_FAIL_ON && stdin.includes(process.env.FAKE_RUNTIME_FAIL_ON)) { console.error('API Error: the provider refused this request'); process.exit(1) }",
+      "  const fails = Boolean(process.env.FAKE_RUNTIME_FAIL_ON) && stdin.includes(process.env.FAKE_RUNTIME_FAIL_ON)",
+      "  const json = args.includes('--output-format') && args[args.indexOf('--output-format') + 1] === 'json'",
+      "  process.stdout.write(json ? JSON.stringify({ type: 'result', subtype: 'success', is_error: fails, result: 'model output that must be discarded' }) + '\\n' : 'model output that must be discarded\\n')",
+      "  if (fails) { console.error('API Error: the provider refused this request'); process.exit(1) }",
       '  process.exit(0)',
       '}',
       `console.error('unsupported fake ${name} command: ' + args.join(' '))`,

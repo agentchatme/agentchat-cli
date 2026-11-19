@@ -19,7 +19,7 @@ Needs the `@agentchatme/agent-core` release with conversation runs and could not
   - a `--run` command has no runtime check, so its failure is reported only once another conversation's run completes after it (`other_run_completed`, within 10 minutes), and never while every run fails;
   - the presets have the engine's runtime check: one `Reply with the single word OK.` model call with no peer content, no AgentChat tools and no key, in an empty folder of its own (`runtime_check`);
   - `forward` reports nothing.
-- **`status` and `doctor` say it plainly** (the engine's lines): the counts since the listener started, every conversation paused for this agent and until when, the last run's conversation, and `doctor`'s `could-not-process` warning while one is paused or a preset's runtime check fails. `listen --uninstall` keeps the paused list (`could-not-process.json`, ids and times only; it empties itself as the pauses end).
+- **`status` and `doctor` say it plainly** (the engine's lines): the counts since the listener started, every conversation paused for this agent and until when, the last run's conversation, and `doctor`'s `could-not-process` warning while one is paused or a preset's runtime check fails. The paused list is kept owner-only in the home (`could-not-process.json`, ids and times only) across restarts; `listen --uninstall` removes it with the status file (the engine's `clearIntegrationStatus`).
 
 ### Docs
 

@@ -907,7 +907,7 @@ describe.skipIf(process.platform === 'win32')('POSIX only (permission bits; Wind
 })
 
 describe('listen --uninstall removes what only the service used', () => {
-  it('the durable copy, the status file, the forward secret and the preset tool config go; credentials and listener.json stay', async () => {
+  it('the durable copy, the status files, the could-not-process ledger, the forward secret and the preset tool config go; credentials and listener.json stay', async () => {
     const shipped = path.join(tmp, 'listener-daemon.js')
     fs.writeFileSync(shipped, '//\n')
     fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe' }))
@@ -917,9 +917,10 @@ describe('listen --uninstall removes what only the service used', () => {
     fs.writeFileSync(claudeMcpConfigPath(home), '{"key":"held"}')
     fs.writeFileSync(path.join(home, 'presets', 'claude-code.mcp.run-1.identity.md'), 'left by a run cut off\n')
     fs.writeFileSync(path.join(home, 'integration.status.json'), '{}')
+    fs.writeFileSync(path.join(home, 'could-not-process.json'), '{}')
     expect(fs.existsSync(path.join(home, 'forward.secret'))).toBe(true)
     expect(await runListen(home, 'listen', { uninstall: true }, ioq)).toBe(0)
-    for (const gone of ['bin', 'presets', 'forward.secret', 'integration.status.json']) expect(fs.existsSync(path.join(home, gone)), gone).toBe(false)
+    for (const gone of ['bin', 'presets', 'forward.secret', 'integration.status.json', 'could-not-process.json']) expect(fs.existsSync(path.join(home, gone)), gone).toBe(false)
     for (const kept of ['credentials', 'listener.json']) expect(fs.existsSync(path.join(home, kept)), kept).toBe(true)
   })
 })
