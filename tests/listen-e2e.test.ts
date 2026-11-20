@@ -49,10 +49,28 @@ beforeEach(async () => {
   lines = []
 })
 afterEach(async () => {
+  // A test that failed before its own abort leaves its listener running: stop
+  // it, and let it end, before its server and its folder go — otherwise it
+  // runs on into the next test (and spawns from a folder that is gone).
+  // Bounded: a stopping listener gives its run 10 s to end (the engine's stop grace).
+  for (const controller of running.controllers.splice(0)) controller.abort()
+  await Promise.race([Promise.allSettled(running.done.splice(0)), pause(20_000)])
   process.env['PATH'] = originalPath
   await server.close()
   fs.rmSync(tmp, { recursive: true, force: true })
-})
+}, 30_000)
+
+/** The listeners (and watchers) this test started, stopped by `afterEach` whatever happened. */
+const running = { controllers: [] as AbortController[], done: [] as Promise<unknown>[] }
+const stoppable = (): AbortController => {
+  const controller = new AbortController()
+  running.controllers.push(controller)
+  return controller
+}
+const tracked = <T>(done: Promise<T>): Promise<T> => {
+  running.done.push(done)
+  return done
+}
 
 const io = (signal: AbortSignal, env: NodeJS.ProcessEnv = process.env) => ({
   out: (l: string) => lines.push(l),
@@ -108,8 +126,8 @@ describe('agentchat listen --run, end to end', () => {
         '})',
       ].join('\n'),
     )
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { run: `"${process.execPath}" "${script}"` }, io(controller.signal))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: `"${process.execPath}" "${script}"` }, io(controller.signal)))
     // Connect → one coalesced wake → the tray count says 1 → one run.
     await until(() => fs.existsSync(record), 15_000)
     server.send({ type: 'message.new', payload: { id: 'msg_1', conversation_id: 'conv_1', sender: 'peer', content: { text: 'BODY NEVER READ' } } })
@@ -135,9 +153,9 @@ describe('agentchat listen --run, end to end', () => {
   it('with the conversation-run prompt: one run per conversation that owes a reply, each told its conversation (AGENTCHAT_WAKE_KIND=conversation, AGENTCHAT_CONVERSATION_ID) and prompted for it alone; the invites get a run of their own; an inherited AGENTCHAT_CONVERSATION_ID never reaches a run', async () => {
     await conversationRunServer({ waiting: 2, invites: ['gri_1'] })
     const record = path.join(tmp, 'conversation-runs.jsonl')
-    const controller = new AbortController()
+    const controller = stoppable()
     const env = { ...process.env, AGENTCHAT_CONVERSATION_ID: 'conv_inherited' }
-    const done = runListen(home, 'listen', { run: recordingCommand(record) }, io(controller.signal, env))
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record) }, io(controller.signal, env)))
     await until(() => readRuns(record).length >= 3, 20_000)
     await pause(300)
     controller.abort()
@@ -165,8 +183,8 @@ describe('agentchat listen --run: could not process, end to end', () => {
   it('a conversation whose run fails is reported once another conversation\'s run completes after it (`other_run_completed`: a custom command has no runtime check); the server\'s answer is followed, and status says it', async () => {
     await conversationRunServer({ waiting: 2 })
     const record = path.join(tmp, 'cnp-runs.jsonl')
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { run: recordingCommand(record, 'conv_0') }, io(controller.signal))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record, 'conv_0') }, io(controller.signal)))
     await until(() => server.processingFailures.length === 1, 20_000)
     // `none` (the double's default answer): nothing more for conv_0.
     await pause(500)
@@ -183,8 +201,8 @@ describe('agentchat listen --run: could not process, end to end', () => {
   it('every run fails: nothing is reported (a broken command is not a conversation\'s fault); the cards wait for the server\'s re-wakes', async () => {
     await conversationRunServer({ waiting: 2 })
     const record = path.join(tmp, 'cnp-all-fail.jsonl')
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { run: recordingCommand(record, '*') }, io(controller.signal))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record, '*') }, io(controller.signal)))
     await until(() => readRuns(record).length >= 2, 20_000)
     await pause(1_000)
     controller.abort()
@@ -198,8 +216,8 @@ describe('agentchat listen --run: could not process, end to end', () => {
     const pausedUntil = new Date(Date.now() + 24 * 3_600_000).toISOString()
     server.answerProcessingFailures({ action: 'paused', attempts: 3, hidden_message_ids: [], paused_until: pausedUntil })
     const record = path.join(tmp, 'cnp-paused.jsonl')
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { run: recordingCommand(record, 'conv_0') }, io(controller.signal))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record, 'conv_0') }, io(controller.signal)))
     await until(() => (readIntegrationStatus(home)?.could_not_process?.paused_conversations.length ?? 0) === 1, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -225,8 +243,8 @@ describe('agentchat forward, end to end', () => {
     const address = receiver.address()
     if (address === null || typeof address === 'string') throw new Error('no address')
     try {
-      const controller = new AbortController()
-      const done = runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal))
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal)))
       await until(() => hits.length > 0, 15_000)
       controller.abort()
       expect(await done).toBe(0)
@@ -258,8 +276,8 @@ describe('agentchat forward, with the conversation-run prompt served', () => {
     const address = receiver.address()
     if (address === null || typeof address === 'string') throw new Error('no address')
     try {
-      const controller = new AbortController()
-      const done = runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal))
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal)))
       await until(() => hits.length > 0, 15_000)
       await pause(1_000)
       controller.abort()
@@ -295,8 +313,8 @@ describe('agentchat forward — invites and wake reasons, end to end', () => {
     const address = receiver.address()
     if (address === null || typeof address === 'string') throw new Error('no address')
     try {
-      const controller = new AbortController()
-      const done = runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal))
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal)))
       await until(() => hits.length === 1, 15_000)
       expect(hits[0]).toMatchObject({ version: 1, reason: 'invite', conversations: [], invites: [{ invite_id: 'gri_7', group_id: 'grp_gri_7', invited_by: '@peer' }], summary: '' })
       expect(JSON.stringify(hits[0])).not.toContain('A GROUP NAME')
@@ -324,8 +342,8 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     const fake = installFakeClaude(tmp)
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude') }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'claude-code', profile: 'answer' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'claude-code', profile: 'answer' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -359,8 +377,8 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     const fake = installFakeClaude(tmp)
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude'), AGENTCHAT_RUN_PROFILE: '' }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'claude-code' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'claude-code' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -388,8 +406,8 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     const listed = JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'github', enabled: true }])
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST: listed, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex') }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'codex', profile: 'answer' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'codex', profile: 'answer' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -410,8 +428,8 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     const lists = path.join(tmp, 'own-mcp-lists.jsonl')
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex'), AGENTCHAT_RUN_PROFILE: '' }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'codex' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'codex' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -448,8 +466,8 @@ describe('could not process with a preset: the runtime check is the evidence (fa
         AGENTCHAT_RUN_PROFILE: '',
       }
       process.env['PATH'] = env.PATH
-      const controller = new AbortController()
-      const done = runListen(home, 'listen', { preset: name }, io(controller.signal, env))
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'listen', { preset: name }, io(controller.signal, env)))
       await until(() => server.processingFailures.length === 1, 25_000)
       controller.abort()
       expect(await done).toBe(0)
@@ -480,9 +498,9 @@ describe('could not process with a preset: the runtime check is the evidence (fa
 
 describe('agentchat watch', () => {
   it('prints frame types and ids, never content; marks own echoes; shows the wake cycle a listener would start', async () => {
-    const controller = new AbortController()
+    const controller = stoppable()
     const printed: string[] = []
-    const done = runWatch(home, {}, { out: (l) => printed.push(l), err: (l) => printed.push(l), signal: controller.signal })
+    const done = tracked(runWatch(home, {}, { out: (l) => printed.push(l), err: (l) => printed.push(l), signal: controller.signal }))
     await until(() => printed.some((l) => l.includes('hello.ok')), 10_000)
     server.send({ type: 'message.new', payload: { id: 'msg_7', conversation_id: 'conv_7', sender: 'peer', content: { text: 'SECRET PEER BODY' } } })
     server.send({ type: 'message.new', payload: { id: 'msg_8', conversation_id: 'conv_7', sender: 'probe', content: { text: 'my own echo' } } })

@@ -95,6 +95,13 @@ describe('CommandRunner — the owner\'s command, once per wake', () => {
     expect(await new CommandRunner({ command: 'true', identity }).preflight({ signal: new AbortController().signal })).toEqual({ ok: true })
   })
 
+  it('a command that ran and exited 1 is FAILED with exit 1, on every platform — never "not found" (the failure could-not-process reports)', async () => {
+    const runner = new CommandRunner({ command: nodeCommand("process.stdout.write('started'); process.stderr.write('API Error: refused\\n'); process.exit(1)"), identity })
+    const outcome = await runner.start({ kind: 'conversation', conversationId: 'conv_1', prompt: 'p', runId: 'r', budgetMs: 20_000 })
+    expect(outcome).toMatchObject({ state: 'failed', exitCode: 1 })
+    expect(outcome.detail ?? '').not.toMatch(/ENOENT/)
+  }, 20_000)
+
   it('a command that is not found is NOT STARTED; a missing workdir fails preflight; an empty command is refused', async () => {
     const runner = new CommandRunner({ command: 'agentchat-no-such-command-' + process.pid, identity })
     const outcome = await runner.start({ kind: 'wake', prompt: 'p', runId: 'r', budgetMs: 20_000 })
