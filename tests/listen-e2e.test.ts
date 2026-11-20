@@ -7,9 +7,9 @@ import { spawn } from 'node:child_process'
 import { runListen } from '../src/listen.js'
 import { writeListenerConfig } from '../src/listener/config.js'
 import { runWatch, describeFrame } from '../src/watch.js'
-import { MANUAL_URL, readIntegrationStatus, RUN_PROFILES } from '@agentchatme/agent-core'
+import { MANUAL_URL, formatIntegrationStatus, readIntegrationStatus, RUN_PROFILES } from '@agentchatme/agent-core'
 import * as presets from '@agentchatme/agent-core/presets'
-import { claudeMcpConfigPath, claudeProjectsDirFor, codexRunArgs, readDenyRules } from '@agentchatme/agent-core/presets'
+import { RUNTIME_CHECK_PROMPT, claudeMcpConfigPath, claudeProjectsDirFor, claudeRuntimeCheckWorkdir, codexRunArgs, readDenyRules } from '@agentchatme/agent-core/presets'
 import { defaultPresetWorkdir } from '../src/listener/config.js'
 import { claudePresetDenyPaths } from '../src/identity.js'
 import { VERSION } from '../src/version.js'
@@ -29,6 +29,9 @@ const ENGINE_HAS_OWN = (RUN_PROFILES as readonly string[]).includes('own')
 // with the listener's own tool config. Every message.new is acked before.
 
 const KEY = 'ac_live_' + 'e'.repeat(40)
+/** The served conversation-run prompt, as a double serves it. Not the server's words: a test that passed because a fixture matched a copy would prove nothing. */
+const TEMPLATE = 'SERVED CONVERSATION RUN for <conversation_id>: only this one.'
+const MANUAL = { version: '9.0.0', body: '---\nname: agentchat\nversion: 9.0.0\n---\n\nTest manual.\n' }
 let tmp: string
 let home: string
 let server: ServerDouble
@@ -46,10 +49,28 @@ beforeEach(async () => {
   lines = []
 })
 afterEach(async () => {
+  // A test that failed before its own abort leaves its listener running: stop
+  // it, and let it end, before its server and its folder go — otherwise it
+  // runs on into the next test (and spawns from a folder that is gone).
+  // Bounded: a stopping listener gives its run 10 s to end (the engine's stop grace).
+  for (const controller of running.controllers.splice(0)) controller.abort()
+  await Promise.race([Promise.allSettled(running.done.splice(0)), pause(20_000)])
   process.env['PATH'] = originalPath
   await server.close()
   fs.rmSync(tmp, { recursive: true, force: true })
-})
+}, 30_000)
+
+/** The listeners (and watchers) this test started, stopped by `afterEach` whatever happened. */
+const running = { controllers: [] as AbortController[], done: [] as Promise<unknown>[] }
+const stoppable = (): AbortController => {
+  const controller = new AbortController()
+  running.controllers.push(controller)
+  return controller
+}
+const tracked = <T>(done: Promise<T>): Promise<T> => {
+  running.done.push(done)
+  return done
+}
 
 const io = (signal: AbortSignal, env: NodeJS.ProcessEnv = process.env) => ({
   out: (l: string) => lines.push(l),
@@ -60,8 +81,38 @@ const io = (signal: AbortSignal, env: NodeJS.ProcessEnv = process.env) => ({
   exit: () => undefined,
 })
 
+/** A server double that serves the conversation-run prompt (the current server), signed in as before. */
+async function conversationRunServer(tray: Parameters<ServerDouble['setTray']>[0]): Promise<void> {
+  await server.close()
+  server = await startServerDouble({ tray, conversationRunTemplate: TEMPLATE, manual: MANUAL })
+  fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe', api_base: server.apiBase }))
+}
+
+/** A command that records each run (stdin, kind, conversation, run id) and fails, after some output, for the conversation named in `failOn` (`*`: every one). */
+function recordingCommand(record: string, failOn: string | null = null): string {
+  const script = path.join(tmp, `agent-${Math.random().toString(16).slice(2)}.cjs`)
+  fs.writeFileSync(
+    script,
+    [
+      "let d = ''",
+      "process.stdin.on('data', (c) => (d += c))",
+      "process.stdin.on('end', () => {",
+      `  require('node:fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({ stdin: d, kind: process.env.AGENTCHAT_WAKE_KIND, conv: process.env.AGENTCHAT_CONVERSATION_ID ?? null, run: process.env.AGENTCHAT_RUN_ID }) + '\\n')`,
+      "  process.stdout.write('ok')",
+      `  const failOn = ${JSON.stringify(failOn)}`,
+      "  if (failOn !== null && (failOn === '*' || process.env.AGENTCHAT_CONVERSATION_ID === failOn)) { console.error('API Error: refused'); process.exit(1) }",
+      '})',
+    ].join('\n'),
+  )
+  return `"${process.execPath}" "${script}"`
+}
+
+type RecordedRun = { stdin: string; kind: string; conv: string | null; run: string }
+const readRuns = (record: string): RecordedRun[] =>
+  fs.existsSync(record) ? fs.readFileSync(record, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as RecordedRun) : []
+
 describe('agentchat listen --run, end to end', () => {
-  it('a wake runs the owner\'s command once: served wake instruction on stdin, identity in env, no key; the frame is acked first', async () => {
+  it('texts without the conversation-run prompt (an older server): a wake runs the owner\'s command once for the tray: served wake instruction on stdin, identity in env, no key; the frame is acked first', async () => {
     const record = path.join(tmp, 'runs.jsonl')
     const script = path.join(tmp, 'agent.cjs')
     fs.writeFileSync(
@@ -75,8 +126,8 @@ describe('agentchat listen --run, end to end', () => {
         '})',
       ].join('\n'),
     )
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { run: `"${process.execPath}" "${script}"` }, io(controller.signal))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: `"${process.execPath}" "${script}"` }, io(controller.signal)))
     // Connect → one coalesced wake → the tray count says 1 → one run.
     await until(() => fs.existsSync(record), 15_000)
     server.send({ type: 'message.new', payload: { id: 'msg_1', conversation_id: 'conv_1', sender: 'peer', content: { text: 'BODY NEVER READ' } } })
@@ -96,7 +147,84 @@ describe('agentchat listen --run, end to end', () => {
     expect(server.served[0]?.hello?.['client']).toBe('agentchat-cli')
     expect(readIntegrationStatus(home)).toMatchObject({ runtime: 'command', handle: 'probe' })
     expect(lines.join('\n')).toMatch(/Listening as @probe — on each wake: run `/)
+    expect(lines.join('\n')).toContain('One run per conversation that owes a reply, one at a time; the served prompt for it goes to stdin')
   }, 30_000)
+
+  it('with the conversation-run prompt: one run per conversation that owes a reply, each told its conversation (AGENTCHAT_WAKE_KIND=conversation, AGENTCHAT_CONVERSATION_ID) and prompted for it alone; the invites get a run of their own; an inherited AGENTCHAT_CONVERSATION_ID never reaches a run', async () => {
+    await conversationRunServer({ waiting: 2, invites: ['gri_1'] })
+    const record = path.join(tmp, 'conversation-runs.jsonl')
+    const controller = stoppable()
+    const env = { ...process.env, AGENTCHAT_CONVERSATION_ID: 'conv_inherited' }
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record) }, io(controller.signal, env)))
+    await until(() => readRuns(record).length >= 3, 20_000)
+    await pause(300)
+    controller.abort()
+    expect(await done).toBe(0)
+    const runs = readRuns(record)
+    // Runs go one at a time, the conversations first, then the invite run.
+    expect(runs.map((r) => [r.kind, r.conv])).toEqual([
+      ['conversation', 'conv_0'],
+      ['conversation', 'conv_1'],
+      ['invite', null],
+    ])
+    expect(runs[0]?.stdin).toContain('SERVED CONVERSATION RUN for conv_0: only this one.')
+    expect(runs[0]?.stdin).not.toContain('conv_1')
+    expect(runs[1]?.stdin).toContain('SERVED CONVERSATION RUN for conv_1: only this one.')
+    expect(runs[2]?.stdin).toContain('SERVED INVITE PROMPT for generic')
+    expect(new Set(runs.map((r) => r.run)).size).toBe(3)
+    expect(JSON.stringify(runs)).not.toContain('conv_inherited')
+    expect(JSON.stringify(runs)).not.toContain('MUST NEVER BE LOGGED')
+    expect(server.processingFailures).toEqual([])
+    expect(readIntegrationStatus(home)?.last_run).toMatchObject({ kind: 'invite' })
+  }, 40_000)
+})
+
+describe('agentchat listen --run: could not process, end to end', () => {
+  it('a conversation whose run fails is reported once another conversation\'s run completes after it (`other_run_completed`: a custom command has no runtime check); the server\'s answer is followed, and status says it', async () => {
+    await conversationRunServer({ waiting: 2 })
+    const record = path.join(tmp, 'cnp-runs.jsonl')
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record, 'conv_0') }, io(controller.signal)))
+    await until(() => server.processingFailures.length === 1, 20_000)
+    // `none` (the double's default answer): nothing more for conv_0.
+    await pause(500)
+    controller.abort()
+    expect(await done).toBe(0)
+    expect(server.processingFailures).toHaveLength(1)
+    expect(server.processingFailures[0]).toMatchObject({ conversationId: 'conv_0', body: { through_message_id: 'msg_0', outcome: 'failed', evidence: 'other_run_completed' } })
+    expect(readRuns(record).map((r) => r.conv)).toEqual(['conv_0', 'conv_1'])
+    const status = readIntegrationStatus(home)
+    expect(status?.could_not_process).toMatchObject({ runtime_check: false, reported: 1, none: 1, paused_conversations: [] })
+    expect(formatIntegrationStatus(status).join('\n')).toContain("no runtime check for this runtime: a failed run is reported only after another conversation's run completes")
+  }, 40_000)
+
+  it('every run fails: nothing is reported (a broken command is not a conversation\'s fault); the cards wait for the server\'s re-wakes', async () => {
+    await conversationRunServer({ waiting: 2 })
+    const record = path.join(tmp, 'cnp-all-fail.jsonl')
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record, '*') }, io(controller.signal)))
+    await until(() => readRuns(record).length >= 2, 20_000)
+    await pause(1_000)
+    controller.abort()
+    expect(await done).toBe(0)
+    expect(server.processingFailures).toEqual([])
+    expect(readIntegrationStatus(home)?.could_not_process).toMatchObject({ runtime_check: false, reported: 0, report_errors: 0 })
+  }, 40_000)
+
+  it('`paused`: the conversation paused for this agent is in the status file until the pause ends, said plainly', async () => {
+    await conversationRunServer({ waiting: 2 })
+    const pausedUntil = new Date(Date.now() + 24 * 3_600_000).toISOString()
+    server.answerProcessingFailures({ action: 'paused', attempts: 3, hidden_message_ids: [], paused_until: pausedUntil })
+    const record = path.join(tmp, 'cnp-paused.jsonl')
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { run: recordingCommand(record, 'conv_0') }, io(controller.signal)))
+    await until(() => (readIntegrationStatus(home)?.could_not_process?.paused_conversations.length ?? 0) === 1, 20_000)
+    controller.abort()
+    expect(await done).toBe(0)
+    const status = readIntegrationStatus(home)
+    expect(status?.could_not_process?.paused_conversations).toMatchObject([{ conversation_id: 'conv_0', paused_until: pausedUntil }])
+    expect(formatIntegrationStatus(status).join('\n')).toContain(`could not process: 1 conversation paused until ${pausedUntil}`)
+  }, 40_000)
 })
 
 describe('agentchat forward, end to end', () => {
@@ -115,8 +243,8 @@ describe('agentchat forward, end to end', () => {
     const address = receiver.address()
     if (address === null || typeof address === 'string') throw new Error('no address')
     try {
-      const controller = new AbortController()
-      const done = runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal))
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal)))
       await until(() => hits.length > 0, 15_000)
       controller.abort()
       expect(await done).toBe(0)
@@ -124,6 +252,41 @@ describe('agentchat forward, end to end', () => {
       expect(hits[0]?.auth).toBe(`Bearer ${secret}`)
       expect(hits[0]?.body).toMatchObject({ version: 1, type: 'agentchat.wake', handle: '@probe' })
       expect(Array.isArray(hits[0]?.body['conversations'])).toBe(true)
+    } finally {
+      receiver.closeAllConnections()
+      await new Promise<void>((r) => receiver.close(() => r()))
+    }
+  }, 30_000)
+})
+
+describe('agentchat forward, with the conversation-run prompt served', () => {
+  it('still one POST per wake, carrying every conversation (the receiver reads the whole tray itself); no could-not-process report', async () => {
+    await conversationRunServer({ waiting: 2 })
+    const hits: Array<Record<string, unknown>> = []
+    const receiver = http.createServer((req, res) => {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        hits.push(JSON.parse(body) as Record<string, unknown>)
+        res.statusCode = 204
+        res.end()
+      })
+    })
+    await new Promise<void>((r) => receiver.listen(0, '127.0.0.1', () => r()))
+    const address = receiver.address()
+    if (address === null || typeof address === 'string') throw new Error('no address')
+    try {
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal)))
+      await until(() => hits.length > 0, 15_000)
+      await pause(1_000)
+      controller.abort()
+      expect(await done).toBe(0)
+      expect(hits).toHaveLength(1)
+      expect(hits[0]).toMatchObject({ version: 1, conversations: [{ id: 'conv_0' }, { id: 'conv_1' }] })
+      expect(readIntegrationStatus(home)?.last_run).toMatchObject({ kind: 'wake' })
+      expect(server.processingFailures).toEqual([])
+      expect(lines.join('\n')).toContain('One POST per wake, one at a time; no message content is ever in it.')
     } finally {
       receiver.closeAllConnections()
       await new Promise<void>((r) => receiver.close(() => r()))
@@ -150,8 +313,8 @@ describe('agentchat forward — invites and wake reasons, end to end', () => {
     const address = receiver.address()
     if (address === null || typeof address === 'string') throw new Error('no address')
     try {
-      const controller = new AbortController()
-      const done = runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal))
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'forward', { to: `http://127.0.0.1:${address.port}/wake` }, io(controller.signal)))
       await until(() => hits.length === 1, 15_000)
       expect(hits[0]).toMatchObject({ version: 1, reason: 'invite', conversations: [], invites: [{ invite_id: 'gri_7', group_id: 'grp_gri_7', invited_by: '@peer' }], summary: '' })
       expect(JSON.stringify(hits[0])).not.toContain('A GROUP NAME')
@@ -179,8 +342,8 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     const fake = installFakeClaude(tmp)
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude') }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'claude-code', profile: 'answer' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'claude-code', profile: 'answer' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -214,8 +377,8 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     const fake = installFakeClaude(tmp)
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude'), AGENTCHAT_RUN_PROFILE: '' }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'claude-code' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'claude-code' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -243,8 +406,8 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     const listed = JSON.stringify([{ name: 'agentchat', enabled: true }, { name: 'github', enabled: true }])
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST: listed, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex') }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'codex', profile: 'answer' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'codex', profile: 'answer' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -265,8 +428,8 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     const lists = path.join(tmp, 'own-mcp-lists.jsonl')
     const env = { ...process.env, PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`, FAKE_RUNTIME_RECORD: fake.recordPath, FAKE_MCP_LIST_RECORD: lists, CODEX_HOME: path.join(tmp, '.codex'), AGENTCHAT_RUN_PROFILE: '' }
     process.env['PATH'] = env.PATH
-    const controller = new AbortController()
-    const done = runListen(home, 'listen', { preset: 'codex' }, io(controller.signal, env))
+    const controller = stoppable()
+    const done = tracked(runListen(home, 'listen', { preset: 'codex' }, io(controller.signal, env)))
     await until(() => readFakeRuns(fake).length > 0, 20_000)
     controller.abort()
     expect(await done).toBe(0)
@@ -286,11 +449,58 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
   }, 40_000)
 })
 
+describe('could not process with a preset: the runtime check is the evidence (fake runtimes)', () => {
+  for (const name of ['claude-code', 'codex'] as const) {
+    it(`${name}: a conversation's run fails, no other run is queued, so the preset's runtime check — the fixed prompt, no AgentChat tools, no key — answers, and the failure is reported with \`runtime_check\``, async () => {
+      await conversationRunServer({ waiting: 1 })
+      const fake = name === 'claude-code' ? installFakeClaude(tmp) : installFakeCodex(tmp)
+      const configDir = path.join(tmp, name === 'claude-code' ? '.claude' : '.codex')
+      const env = {
+        ...process.env,
+        PATH: `${fake.binDir}${path.delimiter}${originalPath ?? ''}`,
+        FAKE_RUNTIME_RECORD: fake.recordPath,
+        FAKE_MCP_LIST_RECORD: path.join(tmp, `${name}-lists.jsonl`),
+        // The run for conv_0 fails the way a provider refusal does; any other prompt is answered.
+        FAKE_RUNTIME_FAIL_ON: 'conv_0',
+        ...(name === 'claude-code' ? { CLAUDE_CONFIG_DIR: configDir } : { CODEX_HOME: configDir }),
+        AGENTCHAT_RUN_PROFILE: '',
+      }
+      process.env['PATH'] = env.PATH
+      const controller = stoppable()
+      const done = tracked(runListen(home, 'listen', { preset: name }, io(controller.signal, env)))
+      await until(() => server.processingFailures.length === 1, 25_000)
+      controller.abort()
+      expect(await done).toBe(0)
+      expect(server.processingFailures[0]).toMatchObject({ conversationId: 'conv_0', body: { through_message_id: 'msg_0', outcome: 'failed', evidence: 'runtime_check' } })
+      const runs = readFakeRuns(fake)
+      const run = runs.find((r) => r.stdin.includes('SERVED CONVERSATION RUN for conv_0'))
+      const check = runs.find((r) => r.stdin === RUNTIME_CHECK_PROMPT)
+      expect(run).toBeDefined()
+      expect(check).toBeDefined()
+      // Nothing from any peer and no AgentChat tools in the check; no key anywhere in it.
+      expect(check!.stdin).not.toContain('conv_0')
+      expect(check!.argv).not.toContain('--mcp-config')
+      if (name === 'claude-code') {
+        expect(check!.argv.slice(check!.argv.indexOf('--tools'), check!.argv.indexOf('--tools') + 2)).toEqual(['--tools', ''])
+        expect(check!.argv).toContain('--strict-mcp-config')
+        expect(fs.realpathSync(check!.cwd)).toBe(fs.realpathSync(claudeRuntimeCheckWorkdir(configDir)))
+      } else {
+        expect(check!.argv).toContain('mcp_servers.agentchat.enabled=false')
+        expect(path.basename(check!.cwd)).toBe('agentchat-runtime-check')
+      }
+      expect(check!.env['AGENTCHAT_API_KEY']).toBeUndefined()
+      expect(check!.env['AGENTCHAT_LISTENER_API_KEY']).toBeUndefined()
+      expect(JSON.stringify(check)).not.toContain(KEY)
+      expect(readIntegrationStatus(home)?.could_not_process).toMatchObject({ runtime_check: true, reported: 1, runtime_checks_ok: 1 })
+    }, 45_000)
+  }
+})
+
 describe('agentchat watch', () => {
   it('prints frame types and ids, never content; marks own echoes; shows the wake cycle a listener would start', async () => {
-    const controller = new AbortController()
+    const controller = stoppable()
     const printed: string[] = []
-    const done = runWatch(home, {}, { out: (l) => printed.push(l), err: (l) => printed.push(l), signal: controller.signal })
+    const done = tracked(runWatch(home, {}, { out: (l) => printed.push(l), err: (l) => printed.push(l), signal: controller.signal }))
     await until(() => printed.some((l) => l.includes('hello.ok')), 10_000)
     server.send({ type: 'message.new', payload: { id: 'msg_7', conversation_id: 'conv_7', sender: 'peer', content: { text: 'SECRET PEER BODY' } } })
     server.send({ type: 'message.new', payload: { id: 'msg_8', conversation_id: 'conv_7', sender: 'probe', content: { text: 'my own echo' } } })

@@ -49,7 +49,8 @@ export function installListenerService(home: string, options: ListenerServiceOpt
 /**
  * Remove the service, then what only it used (only once the service is gone:
  * deleting a binary a loaded restart policy points to makes a restart loop):
- * the durable copy (`bin/`), the status file, the forward secret, and a
+ * the durable copy (`bin/`), the status files and the could-not-process
+ * ledger (the engine's `clearIntegrationStatus`), the forward secret, and a
  * preset's tool config (`presets/`, which holds the key). The credentials
  * and `listener.json` stay. Throws — removing nothing — when the label's
  * service serves another home.
