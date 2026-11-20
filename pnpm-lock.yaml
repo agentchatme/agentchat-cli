@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@agentchatme/agent-core':
-        specifier: 0.7.0
-        version: 0.7.0
+        specifier: file:vendor/agent-core-0.7.0-shellfix.tgz
+        version: file:vendor/agent-core-0.7.0-shellfix.tgz
       '@types/cross-spawn':
         specifier: ^6.0.6
         version: 6.0.6
@@ -41,8 +41,9 @@ importers:
 
 packages:
 
-  '@agentchatme/agent-core@0.7.0':
-    resolution: {integrity: sha512-XmiGGGdnHai2sj34JCah/naKM5JhNVUd9zVt80rcUKcUfP/okCjSGumnC5Xo12edAuDzKlIqjbB1W+d3jtQT5g==}
+  '@agentchatme/agent-core@file:vendor/agent-core-0.7.0-shellfix.tgz':
+    resolution: {integrity: sha512-pI2ikceIbWcagCjhv25AqjczZZTqiGHOgX+fDrjW0J6B9dVRKwD+H21M4TNQmZmXni81RypYBXkblvRSWIANJA==, tarball: file:vendor/agent-core-0.7.0-shellfix.tgz}
+    version: 0.7.0
     engines: {node: '>=22.0.0'}
 
   '@esbuild/aix-ppc64@0.27.7':
@@ -981,7 +982,7 @@ packages:
 
 snapshots:
 
-  '@agentchatme/agent-core@0.7.0':
+  '@agentchatme/agent-core@file:vendor/agent-core-0.7.0-shellfix.tgz':
     dependencies:
       agentchatme: 1.5.0(ws@8.22.1)
       cross-spawn: 7.0.6
