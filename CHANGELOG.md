@@ -2,7 +2,9 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## Unreleased
+## 0.4.0 — 2026-11-20
+
+Minor release (added behaviour → minor +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.7.0, pinned exactly (manual 2.4.0).
 
 Needs the `@agentchatme/agent-core` release with conversation runs and could not process, and the `agentchatme` release that adds them (the one after 1.4.0); the pins move to them at the release step. Until then CI, which installs the current pins, cannot build this.
 
