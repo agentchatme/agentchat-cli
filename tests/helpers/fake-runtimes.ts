@@ -22,8 +22,11 @@ import * as path from 'node:path'
 //                                  included) answers.
 //
 // With `--output-format json` (Claude Code's runtime check) a run answers one
-// result object shaped as Claude Code's (`type`, `subtype`, `is_error`,
-// `result`; `is_error: true` when it fails).
+// result object shaped as Claude Code's: a finished turn (`num_turns` 1,
+// `usage.output_tokens` ≥ 1), `is_error: true` when it fails. With `--json`
+// (`codex exec`, its runtime check included) it prints Codex's events:
+// thread.started, turn.started, then an agent_message item and turn.completed,
+// or turn.failed when it fails.
 //
 // A run's record also says what its `--mcp-config` file held when it started
 // (server names and the file mode, never its contents: it carries a key) and
@@ -95,7 +98,11 @@ function install(root: string, name: string, version: string, authArgs: [string,
       "  if (process.env.FAKE_RUNTIME_RECORD) fs.appendFileSync(process.env.FAKE_RUNTIME_RECORD, JSON.stringify(record) + '\\n')",
       "  const fails = Boolean(process.env.FAKE_RUNTIME_FAIL_ON) && stdin.includes(process.env.FAKE_RUNTIME_FAIL_ON)",
       "  const json = args.includes('--output-format') && args[args.indexOf('--output-format') + 1] === 'json'",
-      "  process.stdout.write(json ? JSON.stringify({ type: 'result', subtype: 'success', is_error: fails, result: 'model output that must be discarded' }) + '\\n' : 'model output that must be discarded\\n')",
+      "  const events = args.includes('--json')",
+      "  const ev = (o) => JSON.stringify(o) + '\\n'",
+      "  if (json) process.stdout.write(ev({ type: 'result', subtype: 'success', is_error: fails, duration_ms: 1200, num_turns: 1, result: 'model output that must be discarded', session_id: 'fake-session', total_cost_usd: 0, usage: { input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: fails ? 0 : 2 } }))",
+      "  else if (events) process.stdout.write(ev({ type: 'thread.started', thread_id: 't1' }) + ev({ type: 'turn.started' }) + (fails ? ev({ type: 'turn.failed', error: { message: 'the provider refused this request' } }) : ev({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'model output that must be discarded' } }) + ev({ type: 'turn.completed', usage: { input_tokens: 12, cached_input_tokens: 0, output_tokens: 2 } })))",
+      "  else process.stdout.write('model output that must be discarded\\n')",
       "  if (fails) { console.error('API Error: the provider refused this request'); process.exit(1) }",
       '  process.exit(0)',
       '}',

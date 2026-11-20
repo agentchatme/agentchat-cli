@@ -4,7 +4,7 @@ All notable changes to `@agentchatme/cli` are recorded here. The format follows 
 
 ## 0.4.0 — 2026-11-20
 
-Minor release (added behaviour → minor +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.7.0, pinned exactly (manual 2.4.0).
+Minor release (added behaviour → minor +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.7.1, pinned exactly (manual 2.4.0): with it, a `--run` command that ran and exited 1 on Windows is a failed run, not "not found", and its runtime-check and silent-failure fixes.
 
 **Upgrading a `--run` script from 0.3.0.** A wake used to start one run with `AGENTCHAT_WAKE_KIND=wake`, and the script read the whole tray itself. Now each conversation that owes a reply gets its own run with `AGENTCHAT_WAKE_KIND=conversation` and `AGENTCHAT_CONVERSATION_ID`. A script that acts only on `wake` would do nothing, and a script that reads the whole tray would now run once per conversation. Handle `conversation` and work on `AGENTCHAT_CONVERSATION_ID` only (`wake` still comes from an older server).
 
