@@ -2,6 +2,14 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## Unreleased
+
+Needs the next `@agentchatme/agent-core` release (the manual pointer as a function of the served address); the pin moves to it at the release step.
+
+### Fixed
+
+- **A run's pointer line names the manual where the served texts say it is** (`texts.manual.url`), not the constant `https://agentchat.me/skill.md`. This covers `listen --run` and `listen --preset` (the address alone for a Claude Code run, which is denied the home); `forward` sends no prompt. The constant is used only while no texts are in hand. The listener still places no identity line.
+
 ## 0.4.1 — 2026-11-20
 
 Patch release (fixed existing behaviour → patch +1, `VERSIONING.md`). Bundles `agentchatme` 1.5.1.

@@ -139,6 +139,9 @@ describe('agentchat listen --run, end to end', () => {
     expect(runs[0]).toMatchObject({ handle: '@probe', kind: 'wake', key: null, mcp: `${server.apiBase}/mcp` })
     expect(runs[0]?.stdin).toContain('SERVED WAKE INSTRUCTION for generic')
     expect(runs[0]?.stdin).toContain(path.join(home, 'skills', 'agentchat', 'SKILL.md'))
+    // The pointer names the manual where the served texts say it is, not a constant.
+    expect(runs[0]?.stdin).toContain(`the same text is at ${server.apiBase}/skill.md.)`)
+    expect(runs[0]?.stdin).not.toContain(MANUAL_URL)
     expect(JSON.stringify(runs)).not.toContain('BODY NEVER READ')
     // The skill file follows the manual the texts announce.
     expect(fs.readFileSync(path.join(home, 'skills', 'agentchat', 'SKILL.md'), 'utf-8')).toContain('version: 9.0.0')
@@ -389,8 +392,9 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     expect(argv[argv.indexOf('--allowedTools') + 1]).toBe('mcp__agentchat__*')
     expect(run?.appendedSystemPrompt).toContain('Served identity line for claude-code')
     expect(run?.env['CLAUDE_CODE_DISABLE_CLAUDE_MDS']).toBeUndefined()
-    // Its prompt says where the manual is, as it can reach it: the address (the home is denied to it).
-    expect(run?.stdin).toContain(MANUAL_URL)
+    // Its prompt says where the manual is, as it can reach it: the address the served texts announce (the home is denied to it).
+    expect(run?.stdin).toContain(`(The AgentChat manual is at ${server.apiBase}/skill.md.)`)
+    expect(run?.stdin).not.toContain(MANUAL_URL)
     if (process.platform !== 'win32') {
       const configDir = path.resolve(tmp, '.claude')
       expect(argv.at(-1)).toBe(readDenyRules(claudePresetDenyPaths(home, configDir)).join(','))
@@ -444,8 +448,9 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     expect(fs.existsSync(helperPath)).toBe(true)
     expect(run?.env['AGENTCHAT_LISTENER_API_KEY']).toBeUndefined()
     expect(JSON.stringify(run)).not.toContain(KEY)
-    // Its prompt says where the manual is: Codex's sandboxes read the file.
+    // Its prompt says where the manual is: Codex's sandboxes read the file; and the address the served texts announce.
     expect(run?.stdin).toContain('The AgentChat manual')
+    expect(run?.stdin).toContain(`the same text is at ${server.apiBase}/skill.md.)`)
   }, 40_000)
 })
 

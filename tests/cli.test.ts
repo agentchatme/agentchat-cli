@@ -13,10 +13,10 @@ import { claudePresetDenyPaths, homeLabel, listenerChecks, removeKeyFiles } from
 import { envKeyConflict, listenerFilesProblem, ownerOnlyProblem, tightenListenerFiles } from '../src/guards.js'
 import { OWN_PROFILE_WARNING, defaultPresetWorkdir, describeListenerConfig, listenerConfigPath, ownProfileLine, presetProfileSummary, writeListenerConfig } from '../src/listener/config.js'
 import { readListenerConfig } from '../src/listener/config.js'
-import { presetPointer } from '../src/runners.js'
+import { filePointer, presetPointer } from '../src/runners.js'
 import { VERSION } from '../src/version.js'
 import * as core from '@agentchatme/agent-core'
-import { alwaysOnWanted, manualPointer, MANUAL_URL, PEER_RUN_WARNING, RUN_PROFILES, writeIntegrationStatus, type IntegrationStatus, type RunProfile } from '@agentchatme/agent-core'
+import { alwaysOnWanted, manualPointer, MANUAL_URL, PEER_RUN_WARNING, resolveManualPointer, RUN_PROFILES, writeIntegrationStatus, type IntegrationStatus, type RunProfile } from '@agentchatme/agent-core'
 import { claudeMcpConfigPath, claudeCodePreset, codexPreset } from '@agentchatme/agent-core/presets'
 import { installFakeClaude, installFakeCodex } from './helpers/fake-runtimes.js'
 import { INBOX_TOOL, SEND_TOOL, startMcpDouble, type McpDouble } from './helpers/mcp-double.js'
@@ -334,13 +334,28 @@ describe('where a run works', () => {
 })
 
 describe('a preset run’s prompt and the profile words', () => {
+  /** A run's pointer as the listener makes it: with the address the texts in hand announce, else the constant. */
+  const SERVED = { manual: { url: 'https://manual.example.test/agentchat/skill.md', version: '9.9.9' } }
+  const pointer = (p: Parameters<typeof resolveManualPointer>[0], texts: typeof SERVED | null = SERVED): string => resolveManualPointer(p, texts)
+
   it('an answer run’s prompt carries no pointer to a manual it cannot reach; work and full get the file or the address, as the run can read it', () => {
     const file = manualPathFor(home)
-    for (const preset of [claudeCodePreset, codexPreset]) expect(presetPointer(preset, 'answer', file)).toBe('')
+    for (const preset of [claudeCodePreset, codexPreset]) expect(pointer(presetPointer(preset, 'answer', file))).toBe('')
     for (const profile of ['work', 'full'] as const) {
-      expect(presetPointer(claudeCodePreset, profile, file)).toBe(`(The AgentChat manual is at ${MANUAL_URL}.)`) // the home is denied to it
-      expect(presetPointer(codexPreset, profile, file)).toBe(manualPointer(`at ${file}`))
+      expect(pointer(presetPointer(claudeCodePreset, profile, file))).toBe(`(The AgentChat manual is at ${SERVED.manual.url}.)`) // the home is denied to it
+      expect(pointer(presetPointer(codexPreset, profile, file))).toBe(manualPointer(`at ${file}`, SERVED.manual.url))
     }
+  })
+
+  it('the pointer names the manual where the served texts say it is; the constant only with no texts in hand', () => {
+    const file = manualPathFor(home)
+    for (const p of [presetPointer(claudeCodePreset, OWN, file), presetPointer(codexPreset, OWN, file), filePointer(file)]) {
+      expect(pointer(p)).toContain(SERVED.manual.url)
+      expect(pointer(p)).not.toContain(MANUAL_URL)
+      expect(pointer(p, null)).toContain(MANUAL_URL)
+    }
+    expect(pointer(presetPointer(claudeCodePreset, OWN, file), null)).toBe(`(The AgentChat manual is at ${MANUAL_URL}.)`)
+    expect(pointer(filePointer(file), null)).toBe(manualPointer(`at ${file}`))
   })
 
   it('a preset listener’s description says what its profile does: own in one line with the honest sentence, the engine’s warning next to work and full', () => {
@@ -355,8 +370,8 @@ describe('a preset run’s prompt and the profile words', () => {
 
   it('an own run’s prompt ends with where the manual is, as the run can reach it (the address for Claude Code, denied the home; the file for Codex)', () => {
     const file = manualPathFor(home)
-    expect(presetPointer(claudeCodePreset, OWN, file)).toBe(`(The AgentChat manual is at ${MANUAL_URL}.)`)
-    expect(presetPointer(codexPreset, OWN, file)).toBe(manualPointer(`at ${file}`))
+    expect(pointer(presetPointer(claudeCodePreset, OWN, file))).toBe(`(The AgentChat manual is at ${SERVED.manual.url}.)`)
+    expect(pointer(presetPointer(codexPreset, OWN, file))).toBe(manualPointer(`at ${file}`, SERVED.manual.url))
   })
 
   it.skipIf(!ENGINE_HAS_OWN)('the own words are the engine’s', () => {
