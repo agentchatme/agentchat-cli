@@ -137,7 +137,7 @@ pnpm test           # the listener end to end against a server double (--run, fo
 bash scripts/release-smoke.sh   # the packed tarball, as npx runs it
 ```
 
-The engine is [`@agentchatme/agent-core`](https://github.com/agentchatme/agentchat-agent-core) (pinned exactly, bundled into `dist/`); the CLI imports it only through its public entry points (`tests/engine-boundary.test.ts`). To build against an unreleased engine or SDK, build those checkouts and point `node_modules/@agentchatme/agent-core` and `node_modules/agentchatme` at them after `pnpm install`.
+The engine is [`@agentchatme/agent-core`](https://github.com/agentchatme/agentchat-agent-core) (pinned exactly, bundled into `dist/`); the CLI imports it only through its public entry points (`tests/engine-boundary.test.ts`). To build against an unreleased engine or SDK, build those checkouts and point `node_modules/@agentchatme/agent-core` and `node_modules/agentchatme` at them after `pnpm install`. A linked engine brings its own `agentchatme`: esbuild follows the link to the engine's real path and takes the SDK from that checkout's `node_modules`. So run `pnpm install` there (or link `node_modules/agentchatme` in the engine checkout too), and check which SDK the bundle carries before you live-test a linked build.
 
 ## License
 
