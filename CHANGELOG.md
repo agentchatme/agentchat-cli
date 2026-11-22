@@ -4,7 +4,7 @@ All notable changes to `@agentchatme/cli` are recorded here. The format follows 
 
 ## Unreleased
 
-Needs the next `@agentchatme/agent-core` release (the manual pointer as a function of the served address); the pin moves to it at the release step. Bundles `agentchatme` 1.8.0 (`^1.8.0`): the listener's manual retry while stale (`ManualSync`, refreshing the texts before each retry).
+Bundles `@agentchatme/agent-core` 0.7.3, pinned exactly (the manual pointer as a function of the served address). Bundles `agentchatme` 1.8.0 (`^1.8.0`): the listener's manual retry while stale (`ManualSync`, refreshing the texts before each retry).
 
 ### Fixed
 

@@ -24,7 +24,7 @@
     "prepublishOnly": "pnpm run build && pnpm run type-check && pnpm run test"
   },
   "devDependencies": {
-    "@agentchatme/agent-core": "0.7.1",
+    "@agentchatme/agent-core": "0.7.3",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^22.19.17",
     "@types/ws": "^8.5.13",
