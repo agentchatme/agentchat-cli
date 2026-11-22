@@ -1,5 +1,5 @@
 import { AgentChatClient, INBOX_TRAY_MAX_LIMIT, type TextsRuntime } from 'agentchatme'
-import { clientIdentityOf, manualPointer, MANUAL_URL, type IntegrationClient, type RunProfile } from '@agentchatme/agent-core'
+import { clientIdentityOf, manualPointer, type IntegrationClient, type ManualPointer, type RunProfile } from '@agentchatme/agent-core'
 import { CommandRunner } from './listener/command-runner.js'
 import { ForwardRunner } from './listener/forward.js'
 import { type ListenerConfig } from './listener/config.js'
@@ -15,8 +15,8 @@ export interface ListenerPlan {
   readonly runner: RunnerFactory
   /** How the listener names itself to the server; `runtime` is what the served texts are rendered for. */
   readonly client: IntegrationClient
-  /** The one pointer line a run prompt ends with. */
-  readonly manualPointer: string
+  /** The one pointer line a run prompt ends with, as a function of the manual's address the served texts announce. */
+  readonly manualPointer: ManualPointer
   /** The skill file kept current from the served texts. */
   readonly manualPath: string
   readonly preset: Preset | null
@@ -37,11 +37,19 @@ export interface PlanOptions {
  * prompt ends with the served instruction alone: the hosted tools and the
  * served texts are everything it has. An `own`, `work` or `full` run that
  * cannot read the identity home (Claude Code: it is denied) is pointed at the
- * address; one that can (Codex), at the file.
+ * address; one that can (Codex), at the file. The address is the one the
+ * served texts announce: the listener calls this with it for each run.
  */
-export function presetPointer(preset: Pick<Preset, 'readsIdentityHome'>, profile: RunProfile, manualPath: string): string {
-  if (profile === 'answer') return ''
-  return preset.readsIdentityHome ? manualPointer(`at ${manualPath}`) : `(The AgentChat manual is at ${MANUAL_URL}.)`
+export function presetPointer(preset: Pick<Preset, 'readsIdentityHome'>, profile: RunProfile, manualPath: string): ManualPointer {
+  return (manualUrl: string) => {
+    if (profile === 'answer') return ''
+    return preset.readsIdentityHome ? manualPointer(`at ${manualPath}`, manualUrl) : `(The AgentChat manual is at ${manualUrl}.)`
+  }
+}
+
+/** The line a `--run` command's prompt ends with: the manual's file, and its address as the served texts announce it (`forward` sends no prompt; its plan carries the same line). */
+export function filePointer(manualPath: string): ManualPointer {
+  return (manualUrl: string) => manualPointer(`at ${manualPath}`, manualUrl)
 }
 
 /** What `runIntegration` is told for a listener config, beside its plan (`listenerRunOptions`). */
@@ -81,7 +89,7 @@ export function planListener(home: string, config: ListenerConfig, options: Plan
       return {
         client: cliClient(),
         manualPath,
-        manualPointer: manualPointer(`at ${manualPath}`),
+        manualPointer: filePointer(manualPath),
         preset: null,
         runner: {
           name: 'command',
@@ -123,7 +131,7 @@ export function planListener(home: string, config: ListenerConfig, options: Plan
       return {
         client,
         manualPath,
-        manualPointer: manualPointer(`at ${manualPath}`),
+        manualPointer: filePointer(manualPath),
         preset: null,
         runner: {
           name: 'forward',

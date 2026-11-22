@@ -139,6 +139,9 @@ describe('agentchat listen --run, end to end', () => {
     expect(runs[0]).toMatchObject({ handle: '@probe', kind: 'wake', key: null, mcp: `${server.apiBase}/mcp` })
     expect(runs[0]?.stdin).toContain('SERVED WAKE INSTRUCTION for generic')
     expect(runs[0]?.stdin).toContain(path.join(home, 'skills', 'agentchat', 'SKILL.md'))
+    // The pointer names the manual where the served texts say it is, not a constant.
+    expect(runs[0]?.stdin).toContain(`the same text is at ${server.apiBase}/skill.md.)`)
+    expect(runs[0]?.stdin).not.toContain(MANUAL_URL)
     expect(JSON.stringify(runs)).not.toContain('BODY NEVER READ')
     // The skill file follows the manual the texts announce.
     expect(fs.readFileSync(path.join(home, 'skills', 'agentchat', 'SKILL.md'), 'utf-8')).toContain('version: 9.0.0')
@@ -389,8 +392,9 @@ describe('agentchat listen --preset claude-code, end to end (fake claude)', () =
     expect(argv[argv.indexOf('--allowedTools') + 1]).toBe('mcp__agentchat__*')
     expect(run?.appendedSystemPrompt).toContain('Served identity line for claude-code')
     expect(run?.env['CLAUDE_CODE_DISABLE_CLAUDE_MDS']).toBeUndefined()
-    // Its prompt says where the manual is, as it can reach it: the address (the home is denied to it).
-    expect(run?.stdin).toContain(MANUAL_URL)
+    // Its prompt says where the manual is, as it can reach it: the address the served texts announce (the home is denied to it).
+    expect(run?.stdin).toContain(`(The AgentChat manual is at ${server.apiBase}/skill.md.)`)
+    expect(run?.stdin).not.toContain(MANUAL_URL)
     if (process.platform !== 'win32') {
       const configDir = path.resolve(tmp, '.claude')
       expect(argv.at(-1)).toBe(readDenyRules(claudePresetDenyPaths(home, configDir)).join(','))
@@ -444,8 +448,9 @@ describe('agentchat listen --preset codex, end to end (fake codex)', () => {
     expect(fs.existsSync(helperPath)).toBe(true)
     expect(run?.env['AGENTCHAT_LISTENER_API_KEY']).toBeUndefined()
     expect(JSON.stringify(run)).not.toContain(KEY)
-    // Its prompt says where the manual is: Codex's sandboxes read the file.
+    // Its prompt says where the manual is: Codex's sandboxes read the file; and the address the served texts announce.
     expect(run?.stdin).toContain('The AgentChat manual')
+    expect(run?.stdin).toContain(`the same text is at ${server.apiBase}/skill.md.)`)
   }, 40_000)
 })
 
@@ -538,18 +543,61 @@ describe('the installed listener: the self-contained bundle a service runs', () 
     fs.mkdirSync(bare)
     fs.copyFileSync(BUNDLE, path.join(bare, 'agentchat-listener.mjs'))
     const record = path.join(tmp, 'service-run.txt')
+    // The record appears whole: the fake agent writes it to a temp file and
+    // renames it into place. A plain `writeFileSync` creates the file before
+    // it fills it, and a poll that lands in between reads '' (seen on Windows).
+    // Diagnostics: each run appends a start and an end line to `runs.log` and
+    // keeps its own stdin in `run-<pid>.txt`.
+    const runsLog = path.join(tmp, 'runs.log')
+    const runsDir = path.join(tmp, 'runs')
+    fs.mkdirSync(runsDir)
     const script = path.join(tmp, 'agent.cjs')
-    fs.writeFileSync(script, `let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{require('node:fs').writeFileSync(${JSON.stringify(record)}, d);process.stdout.write('ok')})`)
+    fs.writeFileSync(script, [
+      `const fs=require('node:fs'),p=require('node:path');`,
+      `fs.appendFileSync(${JSON.stringify(runsLog)}, 'start pid='+process.pid+' t='+Date.now()+'\\n');`,
+      `let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{`,
+      `const tmpRecord=${JSON.stringify(record)}+'.'+process.pid+'.tmp';fs.writeFileSync(tmpRecord, d);fs.renameSync(tmpRecord, ${JSON.stringify(record)});`,
+      `fs.writeFileSync(p.join(${JSON.stringify(runsDir)}, 'run-'+process.pid+'.txt'), d);`,
+      `fs.appendFileSync(${JSON.stringify(runsLog)}, 'end pid='+process.pid+' bytes='+Buffer.byteLength(d)+' t='+Date.now()+'\\n');`,
+      `process.stdout.write('ok')})`,
+    ].join(''))
     writeListenerConfig(home, { version: 1, mode: 'run', command: `"${process.execPath}" "${script}"`, workdir: path.join(tmp, 'work'), updated_at: new Date().toISOString() })
+    const started = Date.now()
     const child = spawn(process.execPath, [path.join(bare, 'agentchat-listener.mjs'), '--home', home], { cwd: bare, stdio: ['ignore', 'pipe', 'pipe'] })
     let log = ''
     child.stdout.on('data', (c) => (log += String(c)))
     child.stderr.on('data', (c) => (log += String(c)))
+    let firstRead: string | null = null
+    let seenAt = 0
+    const diagnose = async (): Promise<string> => {
+      await pause(1_500)
+      const reread = fs.existsSync(record) ? fs.readFileSync(record, 'utf-8') : null
+      const runs = fs.readdirSync(runsDir).map((f) => {
+        const body = fs.readFileSync(path.join(runsDir, f), 'utf-8')
+        return `${f} bytes=${Buffer.byteLength(body)} instruction=${body.includes('SERVED WAKE INSTRUCTION for generic')}`
+      })
+      const runLines = fs.existsSync(runsLog) ? fs.readFileSync(runsLog, 'utf-8').trim().split('\n') : []
+      return [
+        `[bundle-diag] platform=${process.platform} node=${process.version} listener started t=${started} record seen t=${seenAt} (+${seenAt - started} ms)`,
+        `[bundle-diag] first read bytes=${firstRead === null ? 'none' : Buffer.byteLength(firstRead)}; re-read after 1.5 s bytes=${reread === null ? 'none' : Buffer.byteLength(reread)} instruction=${reread?.includes('SERVED WAKE INSTRUCTION for generic') ?? false}`,
+        `[bundle-diag] command starts=${runLines.filter((l) => l.startsWith('start')).length} ends=${runLines.filter((l) => l.startsWith('end')).length}`,
+        ...runLines.map((l) => `[bundle-diag]   ${l}`),
+        ...runs.map((r) => `[bundle-diag]   ${r}`),
+      ].join('\n')
+    }
     try {
-      await until(() => fs.existsSync(record), 20_000)
-      expect(fs.readFileSync(record, 'utf-8')).toContain('SERVED WAKE INSTRUCTION for generic')
-      expect(log).toContain('listener resident')
-      expect(log).not.toMatch(/Dynamic require|Cannot find module/)
+      await until(() => fs.existsSync(record) && fs.statSync(record).size > 0, 20_000)
+      seenAt = Date.now()
+      firstRead = fs.readFileSync(record, 'utf-8')
+      try {
+        expect(firstRead).toContain('SERVED WAKE INSTRUCTION for generic')
+        expect(log).toContain('listener resident')
+        expect(log).not.toMatch(/Dynamic require|Cannot find module/)
+      } catch (error) {
+        console.error(`${await diagnose()}\n[bundle-diag] listener log:\n${log}`)
+        throw error
+      }
+      console.log(await diagnose())
     } finally {
       child.kill('SIGTERM')
       await new Promise((r) => child.once('exit', r))
