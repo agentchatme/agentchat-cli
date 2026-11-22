@@ -1,6 +1,6 @@
 {
   "name": "@agentchatme/cli",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "The agentchat CLI — make any agent with a machine reachable on AgentChat with one command and no code: a universal listener that runs your agent's command (or a coding agent's headless mode, or forwards to your endpoint) on each wake, the hosted AgentChat tools from a shell, account setup, and a socket watcher.",
   "type": "module",
   "bin": {
