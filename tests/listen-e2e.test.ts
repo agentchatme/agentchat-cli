@@ -543,18 +543,59 @@ describe('the installed listener: the self-contained bundle a service runs', () 
     fs.mkdirSync(bare)
     fs.copyFileSync(BUNDLE, path.join(bare, 'agentchat-listener.mjs'))
     const record = path.join(tmp, 'service-run.txt')
+    // Diagnostics: each run appends a start and an end line to `runs.log` and
+    // keeps its own stdin in `run-<pid>.txt`, after the shared record is written
+    // exactly as before (so the record's timing is unchanged).
+    const runsLog = path.join(tmp, 'runs.log')
+    const runsDir = path.join(tmp, 'runs')
+    fs.mkdirSync(runsDir)
     const script = path.join(tmp, 'agent.cjs')
-    fs.writeFileSync(script, `let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{require('node:fs').writeFileSync(${JSON.stringify(record)}, d);process.stdout.write('ok')})`)
+    fs.writeFileSync(script, [
+      `const fs=require('node:fs'),p=require('node:path');`,
+      `fs.appendFileSync(${JSON.stringify(runsLog)}, 'start pid='+process.pid+' t='+Date.now()+'\\n');`,
+      `let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{`,
+      `fs.writeFileSync(${JSON.stringify(record)}, d);`,
+      `fs.writeFileSync(p.join(${JSON.stringify(runsDir)}, 'run-'+process.pid+'.txt'), d);`,
+      `fs.appendFileSync(${JSON.stringify(runsLog)}, 'end pid='+process.pid+' bytes='+Buffer.byteLength(d)+' t='+Date.now()+'\\n');`,
+      `process.stdout.write('ok')})`,
+    ].join(''))
     writeListenerConfig(home, { version: 1, mode: 'run', command: `"${process.execPath}" "${script}"`, workdir: path.join(tmp, 'work'), updated_at: new Date().toISOString() })
+    const started = Date.now()
     const child = spawn(process.execPath, [path.join(bare, 'agentchat-listener.mjs'), '--home', home], { cwd: bare, stdio: ['ignore', 'pipe', 'pipe'] })
     let log = ''
     child.stdout.on('data', (c) => (log += String(c)))
     child.stderr.on('data', (c) => (log += String(c)))
+    let firstRead: string | null = null
+    let seenAt = 0
+    const diagnose = async (): Promise<string> => {
+      await pause(1_500)
+      const reread = fs.existsSync(record) ? fs.readFileSync(record, 'utf-8') : null
+      const runs = fs.readdirSync(runsDir).map((f) => {
+        const body = fs.readFileSync(path.join(runsDir, f), 'utf-8')
+        return `${f} bytes=${Buffer.byteLength(body)} instruction=${body.includes('SERVED WAKE INSTRUCTION for generic')}`
+      })
+      const runLines = fs.existsSync(runsLog) ? fs.readFileSync(runsLog, 'utf-8').trim().split('\n') : []
+      return [
+        `[bundle-diag] platform=${process.platform} node=${process.version} listener started t=${started} record seen t=${seenAt} (+${seenAt - started} ms)`,
+        `[bundle-diag] first read bytes=${firstRead === null ? 'none' : Buffer.byteLength(firstRead)}; re-read after 1.5 s bytes=${reread === null ? 'none' : Buffer.byteLength(reread)} instruction=${reread?.includes('SERVED WAKE INSTRUCTION for generic') ?? false}`,
+        `[bundle-diag] command starts=${runLines.filter((l) => l.startsWith('start')).length} ends=${runLines.filter((l) => l.startsWith('end')).length}`,
+        ...runLines.map((l) => `[bundle-diag]   ${l}`),
+        ...runs.map((r) => `[bundle-diag]   ${r}`),
+      ].join('\n')
+    }
     try {
       await until(() => fs.existsSync(record), 20_000)
-      expect(fs.readFileSync(record, 'utf-8')).toContain('SERVED WAKE INSTRUCTION for generic')
-      expect(log).toContain('listener resident')
-      expect(log).not.toMatch(/Dynamic require|Cannot find module/)
+      seenAt = Date.now()
+      firstRead = fs.readFileSync(record, 'utf-8')
+      try {
+        expect(firstRead).toContain('SERVED WAKE INSTRUCTION for generic')
+        expect(log).toContain('listener resident')
+        expect(log).not.toMatch(/Dynamic require|Cannot find module/)
+      } catch (error) {
+        console.error(`${await diagnose()}\n[bundle-diag] listener log:\n${log}`)
+        throw error
+      }
+      console.log(await diagnose())
     } finally {
       child.kill('SIGTERM')
       await new Promise((r) => child.once('exit', r))
