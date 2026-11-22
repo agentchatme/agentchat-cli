@@ -2,9 +2,9 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## Unreleased
+## 0.4.2 — 2026-11-22
 
-Bundles `@agentchatme/agent-core` 0.7.3, pinned exactly (the manual pointer as a function of the served address). Bundles `agentchatme` 1.8.0 (`^1.8.0`): the listener's manual retry while stale (`ManualSync`, refreshing the texts before each retry).
+Patch release (fixed existing behaviour → patch +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.7.3, pinned exactly (the manual pointer as a function of the served address). Bundles `agentchatme` 1.8.0 (`^1.8.0`): the listener's manual retry while stale (`ManualSync`, refreshing the texts before each retry).
 
 ### Fixed
 
