@@ -543,9 +543,11 @@ describe('the installed listener: the self-contained bundle a service runs', () 
     fs.mkdirSync(bare)
     fs.copyFileSync(BUNDLE, path.join(bare, 'agentchat-listener.mjs'))
     const record = path.join(tmp, 'service-run.txt')
+    // The record appears whole: the fake agent writes it to a temp file and
+    // renames it into place. A plain `writeFileSync` creates the file before
+    // it fills it, and a poll that lands in between reads '' (seen on Windows).
     // Diagnostics: each run appends a start and an end line to `runs.log` and
-    // keeps its own stdin in `run-<pid>.txt`, after the shared record is written
-    // exactly as before (so the record's timing is unchanged).
+    // keeps its own stdin in `run-<pid>.txt`.
     const runsLog = path.join(tmp, 'runs.log')
     const runsDir = path.join(tmp, 'runs')
     fs.mkdirSync(runsDir)
@@ -554,7 +556,7 @@ describe('the installed listener: the self-contained bundle a service runs', () 
       `const fs=require('node:fs'),p=require('node:path');`,
       `fs.appendFileSync(${JSON.stringify(runsLog)}, 'start pid='+process.pid+' t='+Date.now()+'\\n');`,
       `let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{`,
-      `fs.writeFileSync(${JSON.stringify(record)}, d);`,
+      `const tmpRecord=${JSON.stringify(record)}+'.'+process.pid+'.tmp';fs.writeFileSync(tmpRecord, d);fs.renameSync(tmpRecord, ${JSON.stringify(record)});`,
       `fs.writeFileSync(p.join(${JSON.stringify(runsDir)}, 'run-'+process.pid+'.txt'), d);`,
       `fs.appendFileSync(${JSON.stringify(runsLog)}, 'end pid='+process.pid+' bytes='+Buffer.byteLength(d)+' t='+Date.now()+'\\n');`,
       `process.stdout.write('ok')})`,
@@ -584,7 +586,7 @@ describe('the installed listener: the self-contained bundle a service runs', () 
       ].join('\n')
     }
     try {
-      await until(() => fs.existsSync(record), 20_000)
+      await until(() => fs.existsSync(record) && fs.statSync(record).size > 0, 20_000)
       seenAt = Date.now()
       firstRead = fs.readFileSync(record, 'utf-8')
       try {
