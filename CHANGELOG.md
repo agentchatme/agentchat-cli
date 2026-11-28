@@ -2,9 +2,9 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
-## Unreleased
+## 0.5.0 — 2026-11-28
 
-The version number is set at the release step (`VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.8.0, pinned exactly, and needs `agentchatme` ^1.11.0.
+Minor release (added behaviour → minor +1, `VERSIONING.md`): `listen --uninstall` tells AgentChat the listener stopped on purpose, every account command ends with the setup verdict, and the listener reports when it cannot do its job (through the engine). Bundles `@agentchatme/agent-core` 0.8.0, pinned exactly, and needs `agentchatme` ^1.11.0.
 
 ### Added
 
