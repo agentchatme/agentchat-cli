@@ -2,10 +2,10 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { ensureForwardSecret, forwardSecretPath, forwardUrlProblem } from './listener/forward.js'
 import { defaultPresetWorkdir, describeListenerConfig, LISTENER_CONFIG_VERSION, ListenerConfigSchema, readListenerConfig, writeListenerConfig, type ListenerConfig, type ListenerConfigInput } from './listener/config.js'
-import { INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, PEER_RUN_WARNING, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
+import { describeListenerStopped, INTEGRATION_ENV, INTEGRATION_ENV_LEGACY, isRunProfile, PEER_RUN_WARNING, reportListenerStopped, resolveIdentity, resolveRunProfile } from '@agentchatme/agent-core'
 import { runIntegration } from '@agentchatme/agent-core/daemon'
 import { presetNamed, presetNames } from '@agentchatme/agent-core/presets'
-import { invocationFor, offByLegacySwitch } from './home.js'
+import { cliClient, invocationFor, offByLegacySwitch } from './home.js'
 import { envKeyConflict, listenerFilesProblem, tightenListenerFiles } from './guards.js'
 import { listenerRunOptions, planListener, type PlanOptions } from './runners.js'
 import { installListenerService, listenerServiceStatus, uninstallListenerService } from './service.js'
@@ -158,18 +158,41 @@ function runsLine(config: Pick<ListenerConfig, 'mode'>): string {
     : 'one run per conversation that owes a reply, one at a time, the served prompt for it on stdin'
 }
 
+/**
+ * Before the service goes, while the key is still here: AgentChat is told
+ * this listener stops on purpose (contract v1 §3.13), so the agent reads as
+ * switched off, not as a computer that is off. Only for the agent this home's
+ * key names (an exported key is not what the listener serves, and nothing is
+ * sent without this home's listener id). One bounded attempt (the engine's,
+ * 5 s); it never fails the command. The line to print, or null when there
+ * was nothing to tell. Never on SIGTERM or a plain stop: those are not this
+ * command.
+ */
+async function tellListenerStopped(home: string): Promise<string | null> {
+  const result = await reportListenerStopped({ home, client: cliClient(), identity: resolveIdentity(home, { envKey: false }) })
+  const line = describeListenerStopped(result)
+  return line === null ? null : `  ${result.outcome === 'reported' ? '✓' : '–'} ${line}`
+}
+
 export async function runListen(home: string, mode: 'listen' | 'forward', flags: ListenFlags, io: ListenIo): Promise<number> {
   const env = io.env ?? process.env
   const cwd = io.cwd ?? process.cwd()
   const cli = invocationFor(home, env)
 
   if (flags.uninstall === true) {
+    // Before the service goes, while the key is still here: AgentChat is told
+    // this listener stops on purpose (contract v1 §3.13).
+    const stopped = await tellListenerStopped(home)
     try {
       const { label } = uninstallListenerService(home)
-      io.out(`Listener service ${label} removed. ${home}/listener.json is kept; \`${cli} listen --install\` brings it back.`)
+      io.out(
+        [`Listener service ${label} removed. ${home}/listener.json is kept; \`${cli} listen --install\` brings it back.`, ...(stopped !== null ? [stopped] : [])].join('\n'),
+      )
       return 0
     } catch (err) {
       io.err(`Could not remove the listener service: ${err instanceof Error ? err.message : String(err)}`)
+      // What AgentChat was told before the removal failed (as the hosts' daemon disable says it).
+      if (stopped !== null) io.out(stopped)
       return 1
     }
   }

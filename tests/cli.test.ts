@@ -242,7 +242,10 @@ describe('every printed next command reaches the home it was given', () => {
 
   it('status and the register gate name this home, so neither sends the user to ~/.agentchat (where `logout` would delete another agent\'s key)', async () => {
     expect(await main(['--home', home, 'status'])).toBe(0)
-    expect(out.join('\n')).toContain(`Set one up with: ${invocation()} --home ${shellArg(home)} register`)
+    // The setup verdict names this home in the full command (not a bare `register`, which fails without flags).
+    expect(out.join('\n')).toMatch(/^Setup: no_account — /)
+    expect(out.join('\n')).toContain(`\`${invocation()} --home ${shellArg(home)} register --email <email> --handle <handle>\``)
+    expect(out.join('\n')).toContain(`\`${invocation()} --home ${shellArg(home)} login --api-key - < <that file>\``)
     // The worst case of the finding: a home holding an identity says to log out first — of THIS home, never the default.
     fs.writeFileSync(path.join(home, 'credentials'), JSON.stringify({ api_key: KEY, handle: 'probe' }))
     err.length = 0
@@ -937,5 +940,105 @@ describe('listen --uninstall removes what only the service used', () => {
     expect(await runListen(home, 'listen', { uninstall: true }, ioq)).toBe(0)
     for (const gone of ['bin', 'presets', 'forward.secret', 'integration.status.json', 'could-not-process.json']) expect(fs.existsSync(path.join(home, gone)), gone).toBe(false)
     for (const kept of ['credentials', 'listener.json']) expect(fs.existsSync(path.join(home, kept)), kept).toBe(true)
+  })
+})
+
+// ─── Switched off on purpose: AgentChat is told, before the service goes ─────
+//
+// The listener report (contract v1 §3.13): `listen --uninstall` says
+// `stopped` under this home's listener id while the key and the service are
+// still there, so the agent reads as switched off, not as a computer that is
+// off. A loopback server stands in for AgentChat and notes, as each report
+// arrives, whether the service definition still exists.
+
+const serviceOs = process.platform === 'darwin' || process.platform === 'linux'
+
+describe.skipIf(!serviceOs)('listen --uninstall: stopped is reported before the service goes', () => {
+  const LISTENER_ID = 'cli_listener_00000000'
+  const io = () => ({ out: (l: string) => out.push(l), err: (l: string) => err.push(l), cwd: tmp })
+  const definition = (): string =>
+    process.platform === 'darwin'
+      ? path.join(tmp, 'user', 'Library', 'LaunchAgents', `me.agentchat.${serviceLabelForHome(home)}.plist`)
+      : path.join(tmp, 'user', '.config', 'systemd', 'user', `${serviceLabelForHome(home)}.service`)
+
+  async function listenerServer(): Promise<{ url: string; reports: Array<{ body: unknown; definitionThere: boolean }>; close: () => Promise<void> }> {
+    const reports: Array<{ body: unknown; definitionThere: boolean }> = []
+    const server = http.createServer((req, res) => {
+      let raw = ''
+      req.on('data', (chunk: Buffer) => (raw += chunk.toString('utf-8')))
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method !== 'PUT' || req.url !== '/v1/agents/me/listener') {
+          res.statusCode = 404
+          res.end('{}')
+          return
+        }
+        reports.push({ body: JSON.parse(raw) as unknown, definitionThere: fs.existsSync(definition()) })
+        const at = new Date().toISOString()
+        res.end(JSON.stringify({ listener: { ...(JSON.parse(raw) as object), reason_kind: null, state_since: at, reported_at: at } }))
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, reports, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+  }
+
+  async function installed(): Promise<void> {
+    const shipped = path.join(tmp, 'listener-daemon.js')
+    fs.writeFileSync(shipped, '// the shipped listener bundle\n')
+    expect(await runListen(home, 'listen', { run: 'my-agent --once', install: true }, { ...io(), shipped })).toBe(0)
+    expect(fs.existsSync(definition())).toBe(true)
+    out.length = 0
+  }
+
+  it('one stopped report under this home\'s listener id, while the service is still there; then the service goes', async () => {
+    const server = await listenerServer()
+    try {
+      await installed()
+      signIn(server.url)
+      fs.writeFileSync(path.join(home, 'listener-id'), `${LISTENER_ID}\n`)
+      expect(await runListen(home, 'listen', { uninstall: true }, io())).toBe(0)
+      expect(server.reports).toEqual([{ body: { instance_id: LISTENER_ID, state: 'stopped' }, definitionThere: true }])
+      expect(fs.existsSync(definition())).toBe(false)
+      expect(out.join('\n')).toContain('✓ listener: AgentChat was told it stopped on purpose')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('no listener of this home ever reported (no id): nothing sent, nothing said; AgentChat not answering never fails the command', async () => {
+    const server = await listenerServer()
+    try {
+      await installed()
+      signIn(server.url)
+      expect(await runListen(home, 'listen', { uninstall: true }, io())).toBe(0)
+      expect(server.reports).toHaveLength(0)
+      expect(out.join('\n')).not.toContain('listener:')
+    } finally {
+      await server.close()
+    }
+    // Nothing listens there now: the command says so and still succeeds.
+    await installed()
+    fs.writeFileSync(path.join(home, 'listener-id'), `${LISTENER_ID}\n`)
+    expect(await runListen(home, 'listen', { uninstall: true }, io())).toBe(0)
+    expect(out.join('\n')).toMatch(/– listener: could not tell AgentChat it stopped \(.+\); AgentChat shows it as offline instead/)
+    expect(fs.existsSync(definition())).toBe(false)
+  }, 20_000)
+
+  it('an exported key the home does not hold is not this listener\'s agent: nothing is sent for it', async () => {
+    const server = await listenerServer()
+    try {
+      await installed()
+      fs.writeFileSync(path.join(home, 'listener-id'), `${LISTENER_ID}\n`)
+      process.env['AGENTCHAT_API_KEY'] = 'ac_live_' + 'e'.repeat(40)
+      process.env['AGENTCHAT_API_BASE'] = server.url
+      try {
+        expect(await runListen(home, 'listen', { uninstall: true }, io())).toBe(0)
+      } finally {
+        delete process.env['AGENTCHAT_API_BASE']
+      }
+      expect(server.reports).toHaveLength(0)
+    } finally {
+      await server.close()
+    }
   })
 })
