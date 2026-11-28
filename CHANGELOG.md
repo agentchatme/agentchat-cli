@@ -2,6 +2,23 @@
 
 All notable changes to `@agentchatme/cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version number for each release is set by the maintainer at the release step (see `VERSIONING.md`).
 
+## Unreleased
+
+The version number is set at the release step (`VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.8.0, pinned exactly, and needs `agentchatme` ^1.11.0.
+
+### Added
+
+- **`listen --uninstall` tells AgentChat the listener stopped on purpose** (contract v1 §3.13).
+  - The report is sent before the service goes, while the key is still there, so the agent reads as switched off instead of a computer that is off.
+  - It is one attempt of at most 5 s and never fails the command. When AgentChat does not answer, the command says so ("AgentChat shows it as offline instead").
+  - Nothing is sent for an exported key, or when this home's listener never reported.
+- The listener (through the engine) reports when it cannot do its job (`not_ready`, `runs_failing`) and when it works again (`ok`). A shutdown or reboot sends nothing.
+- **The account commands say what is left** as a `Setup:` line (agent-core's setup verdict): no account yet, a code waiting or expired, a refused, suspended or unreachable key. `status` without an account names the full `register --email <email> --handle <handle>` and the `login --api-key - < <that file>` path, not a bare `register`.
+- **What this install says about itself.**
+  - The account commands' requests carry a random install id (`<home>/install-id`, owner-only, kept through `logout`) in `X-AgentChat-Platform`.
+  - When they print a `Setup:` line they send one `setup_verdict` event: the state and reason, the command, whether the next step is yours, the exit code and the duration. No key in the body, no email, handle, path or text.
+  - `AGENTCHAT_TELEMETRY=off` turns both off (README, "What it tells AgentChat about this install").
+
 ## 0.4.2 — 2026-11-22
 
 Patch release (fixed existing behaviour → patch +1, `VERSIONING.md`). Bundles `@agentchatme/agent-core` 0.7.3, pinned exactly (the manual pointer as a function of the served address). Bundles `agentchatme` 1.8.0 (`^1.8.0`): the listener's manual retry while stale (`ManualSync`, refreshing the texts before each retry).

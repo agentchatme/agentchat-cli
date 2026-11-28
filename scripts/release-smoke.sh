@@ -85,7 +85,7 @@ echo "$moved" | grep -q "npx -y @agentchatme/codex" || { echo "::error::install 
 
 status_out="$(run_cli status 2>&1 || true)"
 echo "--- status ---"; echo "$status_out"
-echo "$status_out" | grep -q "No AgentChat identity" || { echo "::error::status did not run"; exit 1; }
+echo "$status_out" | grep -q "^Setup: no_account" || { echo "::error::status did not run"; exit 1; }
 
 installed="$(cd work && run_cli listen --run "my-agent --once" --install 2>&1)"
 echo "--- listen --install ---"; echo "$installed"
