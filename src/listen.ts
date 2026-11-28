@@ -191,6 +191,8 @@ export async function runListen(home: string, mode: 'listen' | 'forward', flags:
       return 0
     } catch (err) {
       io.err(`Could not remove the listener service: ${err instanceof Error ? err.message : String(err)}`)
+      // What AgentChat was told before the removal failed (as the hosts' daemon disable says it).
+      if (stopped !== null) io.out(stopped)
       return 1
     }
   }
